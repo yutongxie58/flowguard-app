@@ -78,6 +78,12 @@ function getInitials(name) {
     .join("") || "FG";
 }
 
+function isWeeklyReportWorkflow(workflow) {
+  return workflow?.baseTemplateId === "weekly-report"
+    || workflow?.id === "weekly-report"
+    || workflow?.template?.toLowerCase().includes("weekly report");
+}
+
 function render() {
   if (!state.session) {
     renderSignIn();
@@ -275,6 +281,63 @@ function renderSignIn() {
 
 function renderRunRequest(workflow) {
   if (!workflow) return "";
+  if (isWeeklyReportWorkflow(workflow)) {
+    const inputs = workflow.inputs || {};
+    return `
+      <section class="run-request weekly-report-inputs">
+        <div class="run-request-copy">
+          <strong>Weekly report inputs</strong>
+          <p class="step-detail">FlowGuard will pull GitHub activity, combine it with your notes, and pause before sending.</p>
+        </div>
+        <div class="weekly-grid">
+          <div class="field">
+            <label for="weekly-repo">GitHub repo</label>
+            <input id="weekly-repo" data-weekly-input="repo" value="${escapeHtml(inputs.repo || "")}" placeholder="owner/repo" />
+          </div>
+          <div class="field">
+            <label for="weekly-range">Date range</label>
+            <select id="weekly-range" data-weekly-input="dateRange">
+              <option value="this-week" ${(inputs.dateRange || "this-week") === "this-week" ? "selected" : ""}>This week</option>
+              <option value="last-7-days" ${inputs.dateRange === "last-7-days" ? "selected" : ""}>Last 7 days</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="weekly-audience">Audience</label>
+            <select id="weekly-audience" data-weekly-input="audience">
+              ${["team", "manager", "public"].map(option => `<option value="${option}" ${(inputs.audience || "team") === option ? "selected" : ""}>${option}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label for="weekly-channel">Channel</label>
+            <select id="weekly-channel" data-weekly-input="channel">
+              ${["Slack", "email"].map(option => `<option value="${option}" ${(inputs.channel || "Slack") === option ? "selected" : ""}>${option}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label for="weekly-slack">Slack destination</label>
+            <input id="weekly-slack" data-weekly-input="slackChannel" value="${escapeHtml(inputs.slackChannel || "#weekly-status")}" />
+          </div>
+        </div>
+        <div class="weekly-notes">
+          <div class="field">
+            <label for="weekly-completed">Extra completed work</label>
+            <textarea id="weekly-completed" data-weekly-input="completedNotes" placeholder="Anything not visible in GitHub">${escapeHtml(inputs.completedNotes || "")}</textarea>
+          </div>
+          <div class="field">
+            <label for="weekly-blockers">Blockers</label>
+            <textarea id="weekly-blockers" data-weekly-input="blockerNotes" placeholder="Waiting on review, missing context, release risk...">${escapeHtml(inputs.blockerNotes || "")}</textarea>
+          </div>
+          <div class="field">
+            <label for="weekly-next">Next steps</label>
+            <textarea id="weekly-next" data-weekly-input="nextStepNotes" placeholder="Focus areas for next week">${escapeHtml(inputs.nextStepNotes || "")}</textarea>
+          </div>
+        </div>
+        <textarea class="instruction-box" data-role="run-request" placeholder="Optional tone or focus for this report">${escapeHtml(state.runRequest)}</textarea>
+        <button class="button" data-action="run">${icons.run} Generate weekly report</button>
+      </section>
+    `;
+  }
+
   return `
     <section class="run-request">
       <div class="run-request-copy">
@@ -481,6 +544,7 @@ function renderCheckpointPanel(workflow, checkpoint) {
   if (state.execution.status === "complete") {
     return `
       ${renderGitHubArtifact(state.execution)}
+      ${renderWeeklyReportArtifact(state.execution)}
       ${renderExecutionPackage(state.execution)}
       <div class="artifact">
         <strong>PR draft summary</strong>
@@ -522,6 +586,7 @@ function renderCheckpointPanel(workflow, checkpoint) {
       </div>
     </div>
     ${renderGitHubArtifact(state.execution)}
+    ${renderWeeklyReportArtifact(state.execution)}
     ${renderExecutionPackage(state.execution)}
     <div class="artifact">
       <strong>Persistent memory</strong>
@@ -577,6 +642,24 @@ function renderGitHubArtifact(execution) {
     <div class="artifact">
       <strong>GitHub repository context</strong>
       <p>${escapeHtml(github.repo)} uses <b>${escapeHtml(github.defaultBranch)}</b> as default branch, has ${Number(github.openIssues).toLocaleString()} open issues, and ${Number(github.stars).toLocaleString()} stars.</p>
+    </div>
+  `;
+}
+
+function renderWeeklyReportArtifact(execution) {
+  const weekly = execution?.artifacts?.weeklyReport;
+  if (!weekly) return "";
+  const activity = weekly.activity;
+  const delivery = weekly.delivery;
+  return `
+    <div class="artifact weekly-report-artifact">
+      <strong>Weekly report draft</strong>
+      ${weekly.ok && activity ? `
+        <div class="artifact-kv"><span>Repo</span><code>${escapeHtml(weekly.repo)}</code></div>
+        <div class="artifact-kv"><span>Activity</span><code>${activity.mergedPulls.length} PRs / ${activity.commits.length} commits / ${activity.closedIssues.length} closed issues</code></div>
+      ` : `<p>${escapeHtml(weekly.error || "GitHub activity is not available yet.")}</p>`}
+      ${weekly.reportText ? `<pre class="report-preview">${escapeHtml(weekly.reportText)}</pre>` : ""}
+      ${delivery ? `<p><b>${escapeHtml(delivery.status)}:</b> ${escapeHtml(delivery.message)}</p>` : `<p>Waiting for approval before sending or drafting the final update.</p>`}
     </div>
   `;
 }
@@ -660,9 +743,13 @@ async function runWorkflow() {
   const workflow = getSelectedWorkflow();
   if (!workflow) return;
   const runInstruction = document.querySelector("[data-role='run-request']")?.value.trim() || state.runRequest;
+  const weeklyInput = {};
+  document.querySelectorAll("[data-weekly-input]").forEach(field => {
+    weeklyInput[field.dataset.weeklyInput] = field.value.trim();
+  });
   state.execution = await api(`/api/workflows/${workflow.id}/runs`, {
     method: "POST",
-    body: JSON.stringify({ input: { ...workflow.inputs, runInstruction } })
+    body: JSON.stringify({ input: { ...workflow.inputs, ...weeklyInput, runInstruction } })
   });
   state.memory = await api("/api/memory");
   state.runRequest = "";

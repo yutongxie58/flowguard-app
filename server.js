@@ -15,6 +15,7 @@ const MONGODB_DB = process.env.MONGODB_DB || "flowguard";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
 const ALLOW_DEMO_RESET = process.env.ALLOW_DEMO_RESET === "true";
 const COLLECTIONS = ["workflows", "executions", "traces", "users", "workspaces"];
 let mongoClient = null;
@@ -202,17 +203,22 @@ const seedData = {
     },
     {
       id: "weekly-report",
-      name: "Weekly Report Workflow",
-      tagline: "Collect project updates, draft a status report, and ask before sending.",
-      status: "draft",
+      name: "Weekly Report Guardrail",
+      tagline: "Pull GitHub activity, draft a weekly update, and ask before sending.",
+      status: "ready",
       owner: "Engineering Ops",
       lastRun: null,
       template: "Weekly report workflow",
-      goal: "Generate a weekly engineering status update from issues, PRs, and deployment notes.",
+      goal: "Generate a weekly engineering status update from GitHub activity, human notes, blockers, and next steps.",
       inputs: {
-        jiraBoard: "ENG Sprint 18",
         repo: "flowguard-demo/platform",
-        slackChannel: "#weekly-status"
+        dateRange: "this-week",
+        audience: "team",
+        channel: "Slack",
+        slackChannel: "#weekly-status",
+        completedNotes: "",
+        blockerNotes: "",
+        nextStepNotes: ""
       },
       agents: [
         { id: "planner", name: "Planner Agent", role: "Builds the report plan.", confidence: 91 },
@@ -220,15 +226,16 @@ const seedData = {
         { id: "checkpoint", name: "Checkpoint Agent", role: "Reviews external-send risk.", confidence: 95 }
       ],
       recordedSteps: [
-        { id: "wr-1", source: "Human trace", title: "Review sprint board", detail: "Find completed, slipped, and blocked work.", risk: "low", judgment: true },
-        { id: "wr-2", source: "Human trace", title: "Summarize merged PRs", detail: "Group changes by product area.", risk: "low", judgment: true },
-        { id: "wr-3", source: "Human trace", title: "Draft Slack update", detail: "Keep tone concise and flag blockers.", risk: "medium", judgment: true },
-        { id: "wr-4", source: "Human trace", title: "Send to channel", detail: "Post final update after approval.", risk: "high", judgment: true }
+        { id: "wr-1", source: "Human trace", title: "Pull this week's GitHub activity", detail: "Collect merged PRs, commits, closed issues, and opened issues from the selected repo.", risk: "low", judgment: false },
+        { id: "wr-2", source: "Human trace", title: "Summarize likely completed work", detail: "Group GitHub activity into completed, in progress, risks, and links.", risk: "low", judgment: true },
+        { id: "wr-3", source: "Human trace", title: "Add blockers and next steps", detail: "Let the user add or edit blockers, extra completed work, and follow-ups.", risk: "medium", judgment: true },
+        { id: "wr-4", source: "Human trace", title: "Generate weekly report", detail: "Create a concise team, manager, or public-facing update.", risk: "medium", judgment: true },
+        { id: "wr-5", source: "Human trace", title: "Send or draft update", detail: "Post to Slack or prepare a send-ready draft after approval.", risk: "high", judgment: true }
       ],
       plan: [
-        { id: "wr-plan-1", agent: "planner", title: "Inspect sprint board", status: "pending", detail: "Classify work by shipped, blocked, slipped.", risk: "low" },
-        { id: "wr-plan-2", agent: "executor", title: "Draft status report", status: "pending", detail: "Create concise update with links.", risk: "medium" },
-        { id: "wr-plan-3", agent: "checkpoint", title: "Send report", status: "blocked", detail: "Post to #weekly-status.", risk: "high", checkpointId: "wr-cp-send" }
+        { id: "wr-plan-1", agent: "planner", title: "Collect GitHub activity", status: "pending", detail: "Fetch merged PRs, commits, closed issues, and opened issues for the date range.", risk: "low" },
+        { id: "wr-plan-2", agent: "executor", title: "Draft weekly report", status: "pending", detail: "Summarize completed work, in progress, blockers, next steps, and risks.", risk: "medium" },
+        { id: "wr-plan-3", agent: "checkpoint", title: "Send report", status: "blocked", detail: "Post or draft the approved weekly update.", risk: "high", checkpointId: "wr-cp-send" }
       ],
       checkpoints: [
         {
@@ -270,9 +277,24 @@ function normalizeDb(db) {
         }
       }
     }
-    if (workflow.id === "weekly-report") {
+    if (workflow.id === "weekly-report" || workflow.baseTemplateId === "weekly-report") {
+      const weeklySeed = seedData.workflows.find(item => item.id === "weekly-report");
       workflow.inputs ||= {};
       if (workflow.inputs.repo === "acme/platform") workflow.inputs.repo = "flowguard-demo/platform";
+      workflow.name = "Weekly Report Guardrail";
+      workflow.tagline = "Pull GitHub activity, draft a weekly update, and ask before sending.";
+      workflow.status = "ready";
+      workflow.goal = "Generate a weekly engineering status update from GitHub activity, human notes, blockers, and next steps.";
+      workflow.recordedSteps = weeklySeed.recordedSteps;
+      workflow.plan = weeklySeed.plan;
+      workflow.checkpoints = weeklySeed.checkpoints;
+      workflow.inputs.dateRange ||= "this-week";
+      workflow.inputs.audience ||= "team";
+      workflow.inputs.channel ||= "Slack";
+      workflow.inputs.slackChannel ||= "#weekly-status";
+      workflow.inputs.completedNotes ||= "";
+      workflow.inputs.blockerNotes ||= "";
+      workflow.inputs.nextStepNotes ||= "";
     }
   }
   return db;
@@ -512,6 +534,10 @@ function createExecutionArtifacts(workflow, input = {}) {
     ? `${runInstruction} Latest checkpoint edit: ${editInstructions.at(-1)}`
     : runInstruction;
   const branchName = `flowguard/${component.replace(/\.[^.]+$/, "").toLowerCase()}-design-update`;
+
+  if (isWeeklyReportWorkflow(workflow)) {
+    return createWeeklyReportArtifacts(workflow, input);
+  }
 
   if (workflow.baseTemplateId === "design-to-pr" || workflow.id === "design-to-pr" || workflow.template?.toLowerCase().includes("design")) {
     return {
@@ -933,20 +959,305 @@ async function fetchGitHubRepo(repo) {
   };
 }
 
+function isWeeklyReportWorkflow(workflow) {
+  return workflow?.baseTemplateId === "weekly-report"
+    || workflow?.id === "weekly-report"
+    || workflow?.template?.toLowerCase().includes("weekly report");
+}
+
+function githubHeaders() {
+  const headers = {
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "FlowGuard-Hackathon"
+  };
+  if (GITHUB_TOKEN) headers.Authorization = `Bearer ${GITHUB_TOKEN}`;
+  return headers;
+}
+
+function resolveDateRange(input = {}) {
+  if (input.startDate && input.endDate) {
+    return {
+      label: "custom range",
+      start: new Date(`${input.startDate}T00:00:00.000Z`),
+      end: new Date(`${input.endDate}T23:59:59.999Z`)
+    };
+  }
+
+  const now = new Date();
+  const start = new Date(now);
+  const day = start.getUTCDay();
+  const daysSinceMonday = (day + 6) % 7;
+  start.setUTCDate(start.getUTCDate() - daysSinceMonday);
+  start.setUTCHours(0, 0, 0, 0);
+
+  return {
+    label: input.dateRange === "last-7-days" ? "last 7 days" : "this week",
+    start: input.dateRange === "last-7-days" ? new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) : start,
+    end: now
+  };
+}
+
+async function fetchGitHubEndpoint(repo, endpoint, params = {}) {
+  const url = new URL(`https://api.github.com/repos/${repo}/${endpoint}`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
+  }
+
+  const response = await fetch(url, { headers: githubHeaders() });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.message || `GitHub ${endpoint} lookup failed`);
+  return Array.isArray(body) ? body : [];
+}
+
+function inRange(value, range) {
+  if (!value) return false;
+  const date = new Date(value);
+  return date >= range.start && date <= range.end;
+}
+
+function simplifyPullRequest(item) {
+  return {
+    number: item.number,
+    title: item.title,
+    author: item.user?.login || "unknown",
+    mergedAt: item.merged_at,
+    url: item.html_url,
+    labels: (item.labels || []).map(label => label.name),
+    body: String(item.body || "").slice(0, 280)
+  };
+}
+
+function simplifyCommit(item) {
+  const message = item.commit?.message || "";
+  return {
+    sha: String(item.sha || "").slice(0, 7),
+    title: message.split("\n")[0],
+    author: item.author?.login || item.commit?.author?.name || "unknown",
+    committedAt: item.commit?.author?.date,
+    url: item.html_url
+  };
+}
+
+function simplifyIssue(item) {
+  return {
+    number: item.number,
+    title: item.title,
+    author: item.user?.login || "unknown",
+    state: item.state,
+    createdAt: item.created_at,
+    closedAt: item.closed_at,
+    url: item.html_url,
+    labels: (item.labels || []).map(label => label.name)
+  };
+}
+
+async function fetchGitHubWeeklyActivity(repo, input = {}) {
+  const range = resolveDateRange(input);
+  const [repoInfo, pulls, commits, issues] = await Promise.all([
+    fetchGitHubRepo(repo),
+    fetchGitHubEndpoint(repo, "pulls", { state: "closed", sort: "updated", direction: "desc", per_page: 50 }),
+    fetchGitHubEndpoint(repo, "commits", { since: range.start.toISOString(), until: range.end.toISOString(), per_page: 50 }),
+    fetchGitHubEndpoint(repo, "issues", { state: "all", since: range.start.toISOString(), per_page: 50 })
+  ]);
+
+  const issueOnly = issues.filter(item => !item.pull_request);
+  return {
+    repo,
+    ok: true,
+    range: {
+      label: range.label,
+      start: range.start.toISOString(),
+      end: range.end.toISOString()
+    },
+    repoInfo,
+    mergedPulls: pulls.filter(item => inRange(item.merged_at, range)).slice(0, 12).map(simplifyPullRequest),
+    commits: commits.filter(item => inRange(item.commit?.author?.date, range)).slice(0, 16).map(simplifyCommit),
+    closedIssues: issueOnly.filter(item => inRange(item.closed_at, range)).slice(0, 12).map(simplifyIssue),
+    openedIssues: issueOnly.filter(item => inRange(item.created_at, range)).slice(0, 12).map(simplifyIssue)
+  };
+}
+
+function compactList(items, formatter, emptyText) {
+  if (!items?.length) return [`- ${emptyText}`];
+  return items.slice(0, 6).map(formatter);
+}
+
+function createWeeklyReportArtifacts(workflow, input = {}) {
+  const repo = input.repo || workflow.inputs?.repo || "owner/repo";
+  const channel = input.slackChannel || workflow.inputs?.slackChannel || "#weekly-status";
+  const audience = input.audience || workflow.inputs?.audience || "team";
+  const destination = input.channel || workflow.inputs?.channel || "Slack";
+  const activity = input.githubActivity;
+  const editInstructions = input.editInstructions || [];
+  const completedNotes = input.completedNotes || "";
+  const blockerNotes = input.blockerNotes || "";
+  const nextStepNotes = input.nextStepNotes || "";
+  const range = activity?.range?.label || input.dateRange || "this week";
+
+  if (!activity?.ok) {
+    return {
+      prSummary: `Weekly report draft for ${repo}: waiting for GitHub activity collection.`,
+      slackMessage: `Weekly report for ${repo} is ready to draft once GitHub activity is available.`,
+      failure: null,
+      weeklyReport: {
+        repo,
+        audience,
+        destination,
+        channel,
+        ok: false,
+        error: activity?.error || null,
+        reportText: "",
+        activity: null,
+        delivery: null
+      }
+    };
+  }
+
+  const completed = [
+    ...compactList(activity.mergedPulls, pr => `- Merged #${pr.number}: ${pr.title} (${pr.author})`, "No merged PRs found in this range."),
+    ...compactList(activity.closedIssues, issue => `- Closed #${issue.number}: ${issue.title}`, "No closed issues found in this range.")
+  ];
+  const inProgress = compactList(activity.commits, commit => `- ${commit.sha}: ${commit.title} (${commit.author})`, "No commits found in this range.");
+  const newWork = compactList(activity.openedIssues, issue => `- Opened #${issue.number}: ${issue.title}`, "No newly opened issues found in this range.");
+  const blockers = blockerNotes
+    ? blockerNotes.split("\n").filter(Boolean).map(line => `- ${line}`)
+    : ["- None reported."];
+  const nextSteps = nextStepNotes
+    ? nextStepNotes.split("\n").filter(Boolean).map(line => `- ${line}`)
+    : ["- Review open PRs and keep closing the highest-priority issues."];
+  const extras = completedNotes
+    ? ["", "Extra completed notes", ...completedNotes.split("\n").filter(Boolean).map(line => `- ${line}`)]
+    : [];
+  const edits = editInstructions.length
+    ? ["", "Reviewer edits", ...editInstructions.map(line => `- ${line}`)]
+    : [];
+
+  const reportText = [
+    `Weekly report for ${repo} (${range})`,
+    `Audience: ${audience}`,
+    "",
+    "Summary",
+    `- ${activity.mergedPulls.length} merged PRs, ${activity.commits.length} commits, ${activity.closedIssues.length} closed issues, ${activity.openedIssues.length} opened issues.`,
+    "",
+    "Completed this week",
+    ...completed,
+    ...extras,
+    "",
+    "In progress",
+    ...inProgress,
+    "",
+    "Blockers",
+    ...blockers,
+    "",
+    "Next steps",
+    ...nextSteps,
+    "",
+    "New / changed work to watch",
+    ...newWork,
+    ...edits
+  ].join("\n");
+
+  return {
+    prSummary: `Weekly report for ${repo}: ${activity.mergedPulls.length} merged PRs, ${activity.commits.length} commits, ${activity.closedIssues.length} closed issues.`,
+    slackMessage: destination.toLowerCase() === "slack"
+      ? `Ready to send weekly report to ${channel}.`
+      : "Ready to use as an email/update draft.",
+    failure: null,
+    weeklyReport: {
+      repo,
+      audience,
+      destination,
+      channel,
+      ok: true,
+      reportText,
+      activity,
+      delivery: null
+    }
+  };
+}
+
 async function enrichExecutionArtifacts(execution, workflow) {
-  const repo = repoFromWorkflow(workflow);
+  const repo = execution.input?.repo || repoFromWorkflow(workflow);
   if (!repo) return execution;
 
   try {
+    if (isWeeklyReportWorkflow(workflow)) {
+      execution.input.githubActivity = await fetchGitHubWeeklyActivity(repo, execution.input);
+      execution.artifacts = createExecutionArtifacts(workflow, execution.input);
+      execution.artifacts.github = execution.input.githubActivity.repoInfo || null;
+      return execution;
+    }
+
     execution.artifacts.github = await fetchGitHubRepo(repo);
     if (execution.artifacts.github?.ok) {
       execution.artifacts.prSummary = `PR draft package for ${repo}: replay workflow changes against ${execution.artifacts.github.defaultBranch}, then request checkpoint approval before publishing.`;
     }
   } catch (error) {
+    if (isWeeklyReportWorkflow(workflow)) {
+      execution.input.githubActivity = { repo, ok: false, error: error.message };
+      execution.artifacts = createExecutionArtifacts(workflow, execution.input);
+      execution.artifacts.github = { repo, ok: false, error: error.message };
+      return execution;
+    }
     execution.artifacts.github = { repo, ok: false, error: error.message };
   }
 
   return execution;
+}
+
+async function deliverWeeklyReportIfReady(execution, workflow) {
+  if (!isWeeklyReportWorkflow(workflow) || execution.status !== "complete" || !execution.artifacts?.weeklyReport) return;
+  const report = execution.artifacts.weeklyReport;
+  if (report.delivery) return;
+
+  if (!report.ok || !report.reportText) {
+    report.delivery = {
+      status: "drafted",
+      message: "GitHub activity was unavailable, so FlowGuard did not send automatically.",
+      deliveredAt: new Date().toISOString()
+    };
+    return;
+  }
+
+  if (report.destination.toLowerCase() !== "slack") {
+    report.delivery = {
+      status: "drafted",
+      message: "Email/update draft is ready after approval.",
+      deliveredAt: new Date().toISOString()
+    };
+    return;
+  }
+
+  if (!SLACK_WEBHOOK_URL) {
+    report.delivery = {
+      status: "drafted",
+      message: "Slack webhook is not configured, so FlowGuard kept this as a send-ready draft.",
+      deliveredAt: new Date().toISOString()
+    };
+    return;
+  }
+
+  const response = await fetch(SLACK_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: report.reportText })
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    report.delivery = {
+      status: "failed",
+      message: text || "Slack webhook request failed.",
+      deliveredAt: new Date().toISOString()
+    };
+    return;
+  }
+
+  report.delivery = {
+    status: "sent",
+    message: `Posted approved weekly report to ${report.channel}.`,
+    deliveredAt: new Date().toISOString()
+  };
 }
 
 function buildMemoryStats(db) {
@@ -1191,6 +1502,7 @@ async function handleApi(req, res, pathname) {
       model: OPENAI_API_KEY ? OPENAI_MODEL : null,
       githubIntegration: true,
       githubAuthenticated: Boolean(GITHUB_TOKEN),
+      slackConfigured: Boolean(SLACK_WEBHOOK_URL),
       allowDemoReset: ALLOW_DEMO_RESET
     });
   }
@@ -1383,6 +1695,7 @@ async function handleApi(req, res, pathname) {
       };
     } else {
       advanceExecution(workflow, execution);
+      await deliverWeeklyReportIfReady(execution, workflow);
     }
 
     await writeDb(db);

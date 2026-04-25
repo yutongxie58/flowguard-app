@@ -834,7 +834,8 @@ button {
 }
 
 .field input,
-.field textarea {
+.field textarea,
+.field select {
   border: 1px solid var(--line);
   border-radius: 8px;
   min-height: 40px;
@@ -846,6 +847,40 @@ button {
 .field textarea {
   min-height: 110px;
   resize: vertical;
+}
+
+.weekly-report-inputs {
+  align-items: stretch;
+}
+
+.weekly-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.weekly-notes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  width: 100%;
+}
+
+.weekly-notes textarea {
+  min-height: 84px;
+}
+
+.report-preview {
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 12px;
+  color: var(--ink);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 .empty {
@@ -913,6 +948,11 @@ button {
   }
 
   .action-stack {
+    grid-template-columns: 1fr;
+  }
+
+  .weekly-grid,
+  .weekly-notes {
     grid-template-columns: 1fr;
   }
 

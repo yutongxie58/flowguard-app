@@ -154,7 +154,7 @@ The UI shows the Planner Agent mode:
 
 ### GitHub Integration
 
-FlowGuard can enrich workflow runs with real GitHub repository context when a workflow includes a repo such as `owner/name` or a recorder trace includes GitHub URLs. The default demo prepares a PR draft package rather than creating a live PR.
+FlowGuard can enrich workflow runs with real GitHub repository context when a workflow includes a repo such as `owner/name` or a recorder trace includes GitHub URLs. The Weekly Report Guardrail also pulls this week's merged PRs, commits, closed issues, and opened issues to draft a status report before the send checkpoint.
 
 Optional:
 
@@ -163,6 +163,16 @@ GITHUB_TOKEN="github_pat_..."
 ```
 
 Public repo lookup works without a token, but authenticated requests have better rate limits.
+
+### Slack Webhook
+
+Set this to post approved weekly reports to Slack:
+
+```bash
+SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+```
+
+If it is not configured, FlowGuard still generates the report and marks the approved update as a send-ready draft.
 
 ### Fetch / Agentverse Scaffold
 
