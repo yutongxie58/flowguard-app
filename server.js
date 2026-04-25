@@ -324,9 +324,16 @@ async function writeMongoDb(db) {
   const normalized = normalizeDb(db);
   for (const collectionName of COLLECTIONS) {
     const collection = mongoDb.collection(collectionName);
-    await collection.deleteMany({});
-    if (normalized[collectionName].length) {
-      await collection.insertMany(normalized[collectionName].map(item => ({ ...item })));
+    const docs = normalized[collectionName];
+    if (docs.length) {
+      await collection.bulkWrite(
+        docs.map(doc => ({
+          replaceOne: { filter: { id: doc.id }, replacement: { ...doc }, upsert: true }
+        }))
+      );
+      await collection.deleteMany({ id: { $nin: docs.map(doc => doc.id) } });
+    } else {
+      await collection.deleteMany({});
     }
   }
 }
