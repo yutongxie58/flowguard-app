@@ -6,6 +6,7 @@ const state = {
   execution: null,
   teachOpen: false,
   manageOpen: false,
+  runRequest: "",
   instructionDraft: ""
 };
 
@@ -81,7 +82,7 @@ function render() {
           <button class="button secondary" data-action="refresh">Sync recorder</button>
           <button class="button secondary" data-action="toggle-manage">${state.manageOpen ? "Close manager" : "Manage workflow"}</button>
           <button class="button secondary" data-action="toggle-teach">${state.teachOpen ? "Close recorder" : "Teach workflow"}</button>
-          <button class="button" data-action="run">${icons.run} Run Agent</button>
+          <button class="button" data-action="run">${icons.run} Run Workflow</button>
         </div>
       </header>
 
@@ -90,7 +91,7 @@ function render() {
           <div class="hero-copy">
             <p class="eyebrow">Human workflow recorder + checkpointed agent replay</p>
             <h2>Teach agents how your team works, then let them <span>pause before risky steps.</span></h2>
-            <p class="hero-text">FlowGuard records professional toil, converts it into a multi-agent dry run, and inserts approval checkpoints before shared-code changes, team messages, deploys, and other high-impact actions.</p>
+            <p class="hero-text">FlowGuard records professional toil, converts it into a multi-agent workflow, and inserts approval checkpoints before shared-code changes, team messages, deploys, and other high-impact actions.</p>
             <div class="metrics-strip">
               <div class="metric"><strong>${workflow?.recordedSteps?.length || 0}</strong><span>recorded steps</span></div>
               <div class="metric"><strong>${totalCheckpoints}</strong><span>safety checkpoints</span></div>
@@ -148,6 +149,7 @@ function render() {
               <button class="button" data-action="run">${icons.run} Run</button>
             </div>
             <div class="surface-body">
+              ${renderRunRequest(workflow)}
               <h3 class="card-title">Recorded human workflow</h3>
               <div class="steps" style="margin-top: 12px;">
                 ${(workflow?.recordedSteps || []).map(step => `
@@ -187,6 +189,20 @@ function render() {
         </section>
       </main>
     </div>
+  `;
+}
+
+function renderRunRequest(workflow) {
+  if (!workflow) return "";
+  return `
+    <section class="run-request">
+      <div class="run-request-copy">
+        <h3 class="card-title">Run request</h3>
+        <p class="step-detail">Optional context for this run only. The saved workflow stays unchanged.</p>
+      </div>
+      <textarea class="instruction-box" data-role="run-request" placeholder="Example: Apply the new loading button design, prepare a PR draft, and wait before notifying Slack.">${escapeHtml(state.runRequest)}</textarea>
+      <button class="button" data-action="run">${icons.run} Run workflow</button>
+    </section>
   `;
 }
 
@@ -353,6 +369,7 @@ function renderTimeline(workflow) {
 
 function renderCheckpointPanel(workflow, checkpoint) {
   if (!workflow) return `<div class="empty">No workflow selected.</div>`;
+  const runInstruction = state.execution?.input?.runInstruction;
 
   if (state.execution?.status === "failed" && state.execution.artifacts.failure) {
     const failure = state.execution.artifacts.failure;
@@ -370,10 +387,10 @@ function renderCheckpointPanel(workflow, checkpoint) {
   if (!state.execution) {
     return `
       <div class="empty">
-        Run the agent to prepare a guarded dry run. FlowGuard will pause before the first risky action and explain why.
+        Run the workflow to prepare execution artifacts. FlowGuard will pause before the first risky action and explain why.
       </div>
       <div class="artifact">
-        <strong>Expected dry-run output</strong>
+        <strong>Expected output</strong>
         <p>Patch preview, test command, PR summary, Slack draft, execution logs, checkpoint decisions, and a failure debugger if the plan is rejected.</p>
       </div>
     `;
@@ -404,6 +421,12 @@ function renderCheckpointPanel(workflow, checkpoint) {
       <span class="pill ${escapeHtml(checkpoint.risk)}">${escapeHtml(checkpoint.risk)} risk</span>
       <h3>${escapeHtml(checkpoint.title)}</h3>
       <p>${escapeHtml(checkpoint.reason)}</p>
+      ${runInstruction ? `
+        <div class="proposal">
+          <strong>This run's request</strong>
+          ${escapeHtml(runInstruction)}
+        </div>
+      ` : ""}
       <div class="proposal">
         <strong>Proposed guarded action</strong>
         ${escapeHtml(checkpoint.proposedAction)}
@@ -511,11 +534,13 @@ async function refreshWorkflows() {
 async function runWorkflow() {
   const workflow = getSelectedWorkflow();
   if (!workflow) return;
+  const runInstruction = document.querySelector("[data-role='run-request']")?.value.trim() || state.runRequest;
   state.execution = await api(`/api/workflows/${workflow.id}/runs`, {
     method: "POST",
-    body: JSON.stringify({ input: workflow.inputs })
+    body: JSON.stringify({ input: { ...workflow.inputs, runInstruction } })
   });
   state.memory = await api("/api/memory");
+  state.runRequest = "";
   state.instructionDraft = "";
   render();
 }
@@ -615,6 +640,7 @@ app.addEventListener("click", event => {
   }
   if (action === "select-workflow") {
     state.selectedWorkflowId = target.dataset.id;
+    state.runRequest = "";
     state.execution = null;
     render();
   }

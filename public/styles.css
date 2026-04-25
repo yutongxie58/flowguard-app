@@ -457,6 +457,25 @@ button {
   gap: 10px;
 }
 
+.run-request {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(49, 95, 141, 0.24);
+  background: var(--blue-soft);
+  border-radius: 8px;
+  padding: 13px;
+  margin-bottom: 16px;
+}
+
+.run-request .instruction-box {
+  margin: 0;
+  background: white;
+}
+
+.run-request .button {
+  justify-content: center;
+}
+
 .step-card {
   border: 1px solid var(--line);
   border-radius: 8px;

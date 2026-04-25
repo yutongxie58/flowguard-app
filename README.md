@@ -2,19 +2,22 @@
 
 Teach an agent a workflow once, then replay it safely with human checkpoints.
 
-FlowGuard is a hackathon-ready MVP for recording professional workflows, converting them into multi-agent dry runs, and pausing before risky actions such as creating PRs, sending Slack messages, deploying, or emailing customers.
+FlowGuard is a hackathon-ready MVP for recording professional workflows, converting them into multi-agent workflows, and pausing before risky actions such as creating PRs, sending Slack messages, deploying, or emailing customers.
 
 ## MVP Demo
 
 The default demo is **Design-to-PR Guardrail Agent**:
 
 1. Review a recorded human handoff workflow.
-2. Run a multi-agent replay.
-3. Watch the execution timeline pause at a checkpoint.
-4. Review the generated execution package: branch, files, patch preview, test command, PR title, and Slack draft.
-5. Approve, reject, edit instruction, or ask why the agent paused.
-6. See generated PR and Slack artifacts.
-7. Reject a checkpoint to trigger the Agent Failure Explanation.
+2. Enter a fresh run request, such as "Use the latest Figma button handoff and prepare a PR draft only."
+3. Run the multi-agent workflow.
+4. Watch the execution timeline pause at a checkpoint.
+5. Review the generated execution package: branch, files, patch preview, test command, PR title, and Slack draft.
+6. Approve, reject, edit instruction, or ask why the agent paused.
+7. See generated PR and Slack artifacts.
+8. Reject a checkpoint to trigger the Agent Failure Explanation.
+
+The recorded workflow is the reusable procedure. The run request is what changes this time.
 
 ## Chrome Recorder MVP
 
@@ -65,6 +68,24 @@ Teams can clean up outdated workflows directly in the app:
 
 This is useful after a team changes process, migrates tools, or stops using an old recorded trace.
 
+## Flexible Replay
+
+FlowGuard does not blindly repeat the exact same clicks. A workflow is a reusable procedure, and each execution can include a new run request.
+
+Example:
+
+```text
+Recorded workflow:
+Open Figma -> find component -> draft patch -> run tests -> prepare PR -> notify Slack
+
+Run request:
+Use the latest loading button design and prepare a PR draft only.
+```
+
+The agent follows the learned procedure, adapts the artifacts to the new request, and pauses before risky actions.
+
+Checkpoint edits also update the current run package. For example, if the recorded workflow says `Select quantity = 3`, the run request says `set quantity to 4`, and a checkpoint edit says `actually set quantity to 5`, FlowGuard updates the preview to the latest instruction.
+
 ## MongoDB Memory Demo Moment
 
 The left sidebar includes an **Agent memory** panel.
@@ -79,7 +100,7 @@ Use it during judging:
 
 ## Production-Ready Paths
 
-FlowGuard keeps working locally with no secrets, but the codebase now has optional production integrations. The demo defaults to dry-run artifacts; production write actions should stay behind checkpoint approval.
+FlowGuard keeps working locally with no secrets, but the codebase now has optional production integrations. External write actions should stay behind checkpoint approval.
 
 ### MongoDB Atlas
 
@@ -144,7 +165,7 @@ We are intentionally stopping before actual deployment until the product/demo pa
 1. "Teams repeat the same design-to-engineering workflow every week, but giving an agent full autonomy is risky."
 2. Click **Run Agent** on the Design-to-PR workflow.
 3. Point to the timeline: "Planner and Executor completed the low-risk discovery steps."
-4. Point to the right panel: "FlowGuard prepares a dry-run package, then pauses because the next step would affect shared design-system code."
+4. Point to the right panel: "FlowGuard prepares execution artifacts, then pauses because the next step would affect shared design-system code."
 5. Click **Ask agent why**, then **Approve**.
 6. Repeat approval for PR creation.
 7. At Slack approval: "This is high risk because it communicates to a team channel."

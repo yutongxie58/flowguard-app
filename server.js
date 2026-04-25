@@ -375,16 +375,79 @@ function riskScore(risk) {
   return { low: 1, medium: 2, high: 3 }[risk] || 1;
 }
 
+function extractRunOverrides(...instructions) {
+  const text = instructions.filter(Boolean).join(" ").toLowerCase();
+  const original = instructions.filter(Boolean).join(" ");
+  const quantityMatches = [...original.matchAll(/\b(?:quantity\s*(?:=|to|:)?\s*|order\s+|buy\s+|set\s+(?:it\s+)?to\s+)(\d{1,5})\b/gi)];
+  const quotedSearchMatches = [...original.matchAll(/['"]([^'"]+)['"]/g)];
+  const searchMatches = [...original.matchAll(/\b(?:search for|search|sku|item|product)\s+([a-z0-9._-]+)/gi)];
+  const dateMatches = [...original.matchAll(/\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|next month|\d{4}-\d{2}-\d{2})\b/gi)];
+  const suppressNotify = /\b(do not|don't|dont|skip|hold|wait before)\b.*\b(slack|notify|send|email|message|post)\b/i.test(original);
+
+  return {
+    quantity: quantityMatches.at(-1)?.[1] || null,
+    searchTerm: quotedSearchMatches.at(-1)?.[1] || searchMatches.at(-1)?.[1] || null,
+    date: dateMatches.at(-1)?.[1] || null,
+    suppressNotify,
+    hasOverrides: Boolean(quantityMatches.length || quotedSearchMatches.length || searchMatches.length || dateMatches.length || suppressNotify || text.includes("instead"))
+  };
+}
+
+function applyOverridesToReplayLine(title, overrides) {
+  let nextTitle = title;
+  if (overrides.searchTerm && /\b(search|sku|item|product)\b/i.test(nextTitle)) {
+    nextTitle = nextTitle.replace(/(['"]).*?\1/g, `'${overrides.searchTerm}'`);
+    if (nextTitle === title) nextTitle = nextTitle.replace(/(search(?: for)?|sku|item|product)(.*)$/i, `$1 '${overrides.searchTerm}'`);
+  }
+  if (overrides.quantity && /\b(quantity|qty|units?|amount|order|buy|cart)\b/i.test(nextTitle)) {
+    nextTitle = nextTitle.replace(/(quantity\s*=\s*)\d+/i, `$1${overrides.quantity}`);
+    nextTitle = nextTitle.replace(/(\bquantity\s*(?:to|:)?\s*)\d+/i, `$1${overrides.quantity}`);
+    if (nextTitle === title) nextTitle = nextTitle.replace(/\b\d+\b/, overrides.quantity);
+    if (nextTitle === title) nextTitle = `${nextTitle} (${overrides.quantity} units)`;
+  }
+  if (overrides.date && /\b(date|delivery|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(nextTitle)) {
+    nextTitle = nextTitle.replace(/\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|next month|\d{4}-\d{2}-\d{2})\b/i, overrides.date);
+    if (nextTitle === title) nextTitle = `${nextTitle} (${overrides.date})`;
+  }
+  if (overrides.suppressNotify && /\b(slack|notify|send|email|message|post)\b/i.test(nextTitle)) {
+    nextTitle = `Hold for approval before: ${nextTitle}`;
+  }
+  return nextTitle;
+}
+
+function buildGenericPatchPreview(workflow, input) {
+  const instructionText = [
+    input.runInstruction,
+    ...(input.editInstructions || [])
+  ];
+  const overrides = extractRunOverrides(...instructionText);
+  const replayLines = workflow.recordedSteps
+    .map(step => applyOverridesToReplayLine(step.title, overrides))
+    .map(title => `+ replay: ${title}`)
+    .slice(0, 5);
+
+  if (overrides.hasOverrides) {
+    replayLines.push(`+ apply run overrides: ${instructionText.filter(Boolean).join(" | ")}`);
+  }
+
+  return replayLines;
+}
+
 function createExecutionArtifacts(workflow, input = {}) {
   const repo = input.repo || workflow.inputs?.repo || "flowguard-demo/design-system";
   const component = input.targetComponent || workflow.inputs?.targetComponent || "Button.tsx";
   const channel = input.slackChannel || workflow.inputs?.slackChannel || "#design-eng";
+  const runInstruction = input.runInstruction || "Follow the recorded workflow with the current task context.";
+  const editInstructions = input.editInstructions || [];
+  const effectiveInstruction = editInstructions.length
+    ? `${runInstruction} Latest checkpoint edit: ${editInstructions.at(-1)}`
+    : runInstruction;
   const branchName = `flowguard/${component.replace(/\.[^.]+$/, "").toLowerCase()}-design-update`;
 
   if (workflow.id === "design-to-pr" || workflow.template?.toLowerCase().includes("design")) {
     return {
-      prSummary: `PR draft package for ${repo}: update ${component} from the captured design handoff, add compact/loading variants, and include regression coverage.`,
-      slackMessage: `Design-to-PR update ready for review: ${component} changes are drafted with tests and a preview package. Waiting on FlowGuard approval before posting to ${channel}.`,
+      prSummary: `PR draft package for ${repo}: ${effectiveInstruction} Draft updates target ${component}, include compact/loading coverage, and wait for approval before publishing.`,
+      slackMessage: `Design-to-PR update ready for review: ${effectiveInstruction} ${component} changes are packaged with tests and a preview. Waiting on FlowGuard approval before posting to ${channel}.`,
       failure: null,
       executionPackage: {
         branchName,
@@ -403,7 +466,9 @@ function createExecutionArtifacts(workflow, input = {}) {
         prTitle: `Update ${component.replace(".tsx", "")} from design handoff`,
         prBody: [
           "## Summary",
-          `- Updates ${component} based on the recorded Figma handoff`,
+          `- Run request: ${runInstruction}`,
+          ...(editInstructions.length ? [`- Latest checkpoint edit: ${editInstructions.at(-1)}`] : []),
+          `- Updates ${component} based on the recorded workflow`,
           "- Adds compact and loading variants",
           "- Adds tests and Storybook coverage",
           "",
@@ -417,16 +482,16 @@ function createExecutionArtifacts(workflow, input = {}) {
   }
 
   return {
-      prSummary: `Execution package for ${workflow.name}: ${workflow.goal}`,
-    slackMessage: `FlowGuard completed a guarded run for "${workflow.name}" and is waiting before any external communication.`,
+    prSummary: `Execution package for ${workflow.name}: ${effectiveInstruction}`,
+    slackMessage: `FlowGuard prepared a guarded run for "${workflow.name}" using this request: ${effectiveInstruction}`,
     failure: null,
     executionPackage: {
       branchName: `flowguard/${workflow.id}`,
       changedFiles: workflow.recordedSteps.slice(0, 3).map(step => step.title),
       testCommand: "Run the verification step recorded in this workflow.",
-      patchPreview: workflow.recordedSteps.map(step => `+ replay: ${step.title}`).slice(0, 5),
+      patchPreview: buildGenericPatchPreview(workflow, input),
       prTitle: workflow.name,
-      prBody: `## Goal\n${workflow.goal}\n\n## Steps\n${workflow.recordedSteps.map(step => `- ${step.title}`).join("\n")}`
+      prBody: `## Goal\n${workflow.goal}\n\n## Run request\n${runInstruction}${editInstructions.length ? `\n\n## Checkpoint edits\n${editInstructions.map(item => `- ${item}`).join("\n")}` : ""}\n\n## Steps\n${workflow.recordedSteps.map(step => `- ${step.title}`).join("\n")}`
     }
   };
 }
@@ -1105,6 +1170,16 @@ async function handleApi(req, res, pathname) {
       instruction: body.instruction || "",
       decidedAt: new Date().toISOString()
     });
+
+    if (body.instruction) {
+      execution.input.editInstructions ||= [];
+      execution.input.editInstructions.push(body.instruction);
+      execution.artifacts = {
+        ...createExecutionArtifacts(workflow, execution.input),
+        github: execution.artifacts.github || null,
+        failure: execution.artifacts.failure || null
+      };
+    }
 
     if (body.decision === "rejected") {
       execution.status = "failed";
