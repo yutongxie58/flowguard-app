@@ -215,7 +215,7 @@ const seedData = {
         dateRange: "this-week",
         audience: "team",
         channel: "Slack",
-        slackChannel: "#weekly-status",
+        slackChannel: "#weekly-report",
         completedNotes: "",
         blockerNotes: "",
         nextStepNotes: ""
@@ -245,7 +245,7 @@ const seedData = {
           risk: "high",
           requiresApproval: true,
           reason: "This communicates project status to a broad internal audience.",
-          proposedAction: "Send weekly report to #weekly-status."
+          proposedAction: "Send weekly report to #weekly-report."
         }
       ]
     }
@@ -291,7 +291,7 @@ function normalizeDb(db) {
       workflow.inputs.dateRange ||= "this-week";
       workflow.inputs.audience ||= "team";
       workflow.inputs.channel ||= "Slack";
-      workflow.inputs.slackChannel ||= "#weekly-status";
+      if (!workflow.inputs.slackChannel || workflow.inputs.slackChannel === "#weekly-status") workflow.inputs.slackChannel = "#weekly-report";
       workflow.inputs.completedNotes ||= "";
       workflow.inputs.blockerNotes ||= "";
       workflow.inputs.nextStepNotes ||= "";
@@ -1084,7 +1084,7 @@ function compactList(items, formatter, emptyText) {
 
 function createWeeklyReportArtifacts(workflow, input = {}) {
   const repo = input.repo || workflow.inputs?.repo || "owner/repo";
-  const channel = input.slackChannel || workflow.inputs?.slackChannel || "#weekly-status";
+  const channel = input.slackChannel || workflow.inputs?.slackChannel || "#weekly-report";
   const audience = input.audience || workflow.inputs?.audience || "team";
   const destination = input.channel || workflow.inputs?.channel || "Slack";
   const activity = input.githubActivity;

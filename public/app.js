@@ -315,7 +315,7 @@ function renderRunRequest(workflow) {
           </div>
           <div class="field">
             <label for="weekly-slack">Slack destination</label>
-            <input id="weekly-slack" data-weekly-input="slackChannel" value="${escapeHtml(inputs.slackChannel || "#weekly-status")}" />
+            <input id="weekly-slack" data-weekly-input="slackChannel" value="${escapeHtml(inputs.slackChannel || "#weekly-report")}" />
           </div>
         </div>
         <div class="weekly-notes">

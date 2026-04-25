@@ -826,6 +826,7 @@ button {
 .field {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .field label {
@@ -836,6 +837,8 @@ button {
 .field input,
 .field textarea,
 .field select {
+  width: 100%;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   min-height: 40px;
@@ -851,24 +854,40 @@ button {
 
 .weekly-report-inputs {
   align-items: stretch;
+  gap: 12px;
 }
 
 .weekly-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   width: 100%;
 }
 
+.weekly-grid .field:first-child,
+.weekly-grid .field:last-child {
+  grid-column: 1 / -1;
+}
+
 .weekly-notes {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr;
   gap: 10px;
   width: 100%;
 }
 
 .weekly-notes textarea {
-  min-height: 84px;
+  min-height: 76px;
+  max-height: 150px;
+}
+
+.weekly-report-inputs > .instruction-box {
+  min-height: 64px;
+  max-height: 130px;
+}
+
+.weekly-report-inputs > .button {
+  width: 100%;
 }
 
 .report-preview {
