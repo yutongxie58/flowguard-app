@@ -16,7 +16,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const ALLOW_DEMO_RESET = process.env.ALLOW_DEMO_RESET === "true";
-const COLLECTIONS = ["workflows", "executions", "traces"];
+const COLLECTIONS = ["workflows", "executions", "traces", "users", "workspaces"];
 let mongoClient = null;
 let mongoDb = null;
 let storageMode = "json";
@@ -258,8 +258,10 @@ function normalizeDb(db) {
   db.workflows ||= [];
   db.executions ||= [];
   db.traces ||= [];
+  db.users ||= [];
+  db.workspaces ||= [];
   for (const workflow of db.workflows) {
-    if (workflow.id === "design-to-pr") {
+  if (workflow.id === "design-to-pr") {
       workflow.inputs ||= {};
       if (workflow.inputs.repo === "acme/web") workflow.inputs.repo = "flowguard-demo/design-system";
       for (const checkpoint of workflow.checkpoints || []) {
@@ -278,6 +280,59 @@ function normalizeDb(db) {
 
 function freshSeedData() {
   return JSON.parse(JSON.stringify(seedData));
+}
+
+function slugify(value) {
+  return String(value || "workspace")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48) || "workspace";
+}
+
+function getWorkspaceId(req) {
+  const raw = req.headers["x-workspace-id"];
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+
+function scopedItems(items, workspaceId) {
+  if (!workspaceId) return items;
+  return items.filter(item => item.workspaceId === workspaceId);
+}
+
+function seedWorkflowsForWorkspace(workspace) {
+  return freshSeedData().workflows.map(workflow => ({
+    ...workflow,
+    id: `${workspace.id}-${workflow.id}`,
+    baseTemplateId: workflow.id,
+    workspaceId: workspace.id,
+    createdBy: workspace.createdBy,
+    owner: workflow.owner
+  }));
+}
+
+function ensureWorkspaceSeedWorkflows(db, workspace) {
+  const hasSeed = db.workflows.some(workflow => workflow.workspaceId === workspace.id);
+  if (!hasSeed) {
+    db.workflows.unshift(...seedWorkflowsForWorkspace(workspace));
+  }
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return { salt, hash };
+}
+
+function verifyPassword(password, user) {
+  if (!user?.passwordHash || !user?.passwordSalt) return false;
+  const { hash } = hashPassword(password, user.passwordSalt);
+  return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(user.passwordHash, "hex"));
+}
+
+function publicUser(user) {
+  if (!user) return null;
+  const { passwordHash, passwordSalt, ...safeUser } = user;
+  return safeUser;
 }
 
 function readJsonDb() {
@@ -317,12 +372,14 @@ async function connectStorage() {
 }
 
 async function readMongoDb() {
-  const [workflows, executions, traces] = await Promise.all(
+  const collectionDocs = await Promise.all(
     COLLECTIONS.map(collectionName =>
       mongoDb.collection(collectionName).find({}, { projection: { _id: 0 } }).toArray()
     )
   );
-  return normalizeDb({ workflows, executions, traces });
+  return normalizeDb(
+    Object.fromEntries(COLLECTIONS.map((collectionName, index) => [collectionName, collectionDocs[index]]))
+  );
 }
 
 async function writeMongoDb(db) {
@@ -456,7 +513,7 @@ function createExecutionArtifacts(workflow, input = {}) {
     : runInstruction;
   const branchName = `flowguard/${component.replace(/\.[^.]+$/, "").toLowerCase()}-design-update`;
 
-  if (workflow.id === "design-to-pr" || workflow.template?.toLowerCase().includes("design")) {
+  if (workflow.baseTemplateId === "design-to-pr" || workflow.id === "design-to-pr" || workflow.template?.toLowerCase().includes("design")) {
     return {
       prSummary: `PR draft package for ${repo}: ${effectiveInstruction} Draft updates target ${component}, include compact/loading coverage, and wait for approval before publishing.`,
       slackMessage: `Design-to-PR update ready for review: ${effectiveInstruction} ${component} changes are packaged with tests and a preview. Waiting on FlowGuard approval before posting to ${channel}.`,
@@ -918,6 +975,15 @@ function buildMemoryStats(db) {
   };
 }
 
+function memoryStatsForWorkspace(db, workspaceId) {
+  return buildMemoryStats({
+    ...db,
+    workflows: scopedItems(db.workflows, workspaceId),
+    traces: scopedItems(db.traces, workspaceId),
+    executions: scopedItems(db.executions, workspaceId)
+  });
+}
+
 function titleCase(value) {
   return String(value || "")
     .replace(/[-_]+/g, " ")
@@ -1042,9 +1108,76 @@ function createWorkflowFromTrace(trace) {
 
 async function handleApi(req, res, pathname) {
   const db = await readDb();
+  const workspaceId = getWorkspaceId(req);
 
   if (req.method === "OPTIONS") {
     return sendJson(res, 204, {});
+  }
+
+  if (req.method === "POST" && pathname === "/api/auth/signup") {
+    const body = await readBody(req);
+    const name = String(body.name || "").trim();
+    const email = String(body.email || "").trim().toLowerCase();
+    const password = String(body.password || "");
+    const workspaceName = String(body.workspaceName || "").trim();
+
+    if (!name || !email || !password || !workspaceName) {
+      return sendJson(res, 400, { error: "Name, email, password, and workspace are required." });
+    }
+    if (password.length < 6) {
+      return sendJson(res, 400, { error: "Password must be at least 6 characters." });
+    }
+    if (db.users.some(user => user.email === email)) {
+      return sendJson(res, 409, { error: "An account with this email already exists. Sign in instead." });
+    }
+
+    const workspaceSlug = slugify(workspaceName);
+    let workspace = db.workspaces.find(item => item.slug === workspaceSlug);
+    if (!workspace) {
+      workspace = {
+        id: `ws-${workspaceSlug}`,
+        slug: workspaceSlug,
+        name: workspaceName,
+        createdBy: email,
+        createdAt: new Date().toISOString()
+      };
+      db.workspaces.push(workspace);
+    }
+
+    const passwordRecord = hashPassword(password);
+    const user = {
+      id: `user-${crypto.randomUUID()}`,
+      name,
+      email,
+      workspaceId: workspace.id,
+      passwordHash: passwordRecord.hash,
+      passwordSalt: passwordRecord.salt,
+      createdAt: new Date().toISOString()
+    };
+    db.users.push(user);
+
+    ensureWorkspaceSeedWorkflows(db, { ...workspace, createdBy: user.email });
+    await writeDb(db);
+    return sendJson(res, 201, { user: publicUser(user), workspace });
+  }
+
+  if (req.method === "POST" && pathname === "/api/auth/signin") {
+    const body = await readBody(req);
+    const email = String(body.email || "").trim().toLowerCase();
+    const password = String(body.password || "");
+    const user = db.users.find(item => item.email === email);
+    if (!user || !verifyPassword(password, user)) {
+      return sendJson(res, 401, { error: "Invalid email or password." });
+    }
+
+    const workspace = db.workspaces.find(item => item.id === user.workspaceId);
+    if (!workspace) {
+      return sendJson(res, 404, { error: "Workspace not found for this account." });
+    }
+
+    ensureWorkspaceSeedWorkflows(db, { ...workspace, createdBy: user.email });
+    await writeDb(db);
+    return sendJson(res, 200, { user: publicUser(user), workspace });
   }
 
   if (req.method === "GET" && pathname === "/api/health") {
@@ -1066,28 +1199,54 @@ async function handleApi(req, res, pathname) {
     if (!ALLOW_DEMO_RESET) {
       return sendJson(res, 403, { error: "Demo reset is disabled. Set ALLOW_DEMO_RESET=true to enable it." });
     }
-    const resetDb = freshSeedData();
+    const resetDb = workspaceId
+      ? {
+          ...db,
+          workflows: db.workflows.filter(item => item.workspaceId !== workspaceId),
+          traces: db.traces.filter(item => item.workspaceId !== workspaceId),
+          executions: db.executions.filter(item => item.workspaceId !== workspaceId)
+        }
+      : freshSeedData();
+    if (workspaceId) {
+      const workspace = db.workspaces.find(item => item.id === workspaceId);
+      if (workspace) ensureWorkspaceSeedWorkflows(resetDb, workspace);
+    }
     await writeDb(resetDb);
     return sendJson(res, 200, {
       ok: true,
       storage: storageMode,
-      workflows: resetDb.workflows.length,
-      traces: resetDb.traces.length,
-      executions: resetDb.executions.length
+      workflows: scopedItems(resetDb.workflows, workspaceId).length,
+      traces: scopedItems(resetDb.traces, workspaceId).length,
+      executions: scopedItems(resetDb.executions, workspaceId).length
     });
   }
 
+  if (req.method === "POST" && pathname === "/api/admin/clear-test-auth") {
+    if (!ALLOW_DEMO_RESET) {
+      return sendJson(res, 403, { error: "Test auth cleanup is disabled. Set ALLOW_DEMO_RESET=true to enable it." });
+    }
+    const emails = ["auth-tester@flowguard.dev", "clean-auth@flowguard.dev", "approver@flowguard.dev", "yutong@flowguard.dev"];
+    const workspaces = ["ws-auth-demo", "ws-clean-auth-demo", "ws-demo-workspace", "ws-flowguard-team"];
+    db.users = db.users.filter(user => !emails.includes(user.email));
+    db.workspaces = db.workspaces.filter(workspace => !workspaces.includes(workspace.id));
+    db.workflows = db.workflows.filter(workflow => !workspaces.includes(workflow.workspaceId));
+    db.executions = db.executions.filter(execution => !workspaces.includes(execution.workspaceId));
+    db.traces = db.traces.filter(trace => !workspaces.includes(trace.workspaceId));
+    await writeDb(db);
+    return sendJson(res, 200, { ok: true, removedEmails: emails.length, removedWorkspaces: workspaces.length });
+  }
+
   if (req.method === "GET" && pathname === "/api/memory") {
-    return sendJson(res, 200, buildMemoryStats(db));
+    return sendJson(res, 200, memoryStatsForWorkspace(db, workspaceId));
   }
 
   if (req.method === "GET" && pathname === "/api/workflows") {
-    return sendJson(res, 200, db.workflows);
+    return sendJson(res, 200, scopedItems(db.workflows, workspaceId));
   }
 
   const workflowMatch = pathname.match(/^\/api\/workflows\/([^/]+)$/);
   if (req.method === "GET" && workflowMatch) {
-    const workflow = db.workflows.find(item => item.id === workflowMatch[1]);
+    const workflow = scopedItems(db.workflows, workspaceId).find(item => item.id === workflowMatch[1]);
     return workflow ? sendJson(res, 200, workflow) : sendJson(res, 404, { error: "Workflow not found" });
   }
 
@@ -1100,6 +1259,8 @@ async function handleApi(req, res, pathname) {
       goal: body.goal,
       steps: body.steps || []
     }, "LLM planner");
+    workflow.workspaceId = workspaceId || body.workspaceId || null;
+    workflow.createdBy = req.headers["x-user-email"] || body.createdBy || null;
     db.workflows.unshift(workflow);
     await writeDb(db);
     return sendJson(res, 201, workflow);
@@ -1107,7 +1268,7 @@ async function handleApi(req, res, pathname) {
 
   if (req.method === "PUT" && workflowMatch) {
     const body = await readBody(req);
-    const index = db.workflows.findIndex(item => item.id === workflowMatch[1]);
+    const index = db.workflows.findIndex(item => item.id === workflowMatch[1] && (!workspaceId || !item.workspaceId || item.workspaceId === workspaceId));
     if (index === -1) return sendJson(res, 404, { error: "Workflow not found" });
 
     const baseWorkflow = rebuildWorkflowFromEdit(db.workflows[index], body);
@@ -1124,7 +1285,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "DELETE" && workflowMatch) {
-    const index = db.workflows.findIndex(item => item.id === workflowMatch[1]);
+    const index = db.workflows.findIndex(item => item.id === workflowMatch[1] && (!workspaceId || !item.workspaceId || item.workspaceId === workspaceId));
     if (index === -1) return sendJson(res, 404, { error: "Workflow not found" });
 
     const [deleted] = db.workflows.splice(index, 1);
@@ -1135,7 +1296,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "GET" && pathname === "/api/traces") {
-    return sendJson(res, 200, db.traces);
+    return sendJson(res, 200, scopedItems(db.traces, workspaceId));
   }
 
   if (req.method === "POST" && pathname === "/api/traces") {
@@ -1147,6 +1308,7 @@ async function handleApi(req, res, pathname) {
       owner: body.owner || "FlowGuard Recorder",
       createdAt: body.createdAt || new Date().toISOString(),
       receivedAt: new Date().toISOString(),
+      workspaceId: workspaceId || body.workspaceId || null,
       events: Array.isArray(body.events) ? body.events.slice(0, 200) : []
     };
     const baseWorkflow = createWorkflowFromTrace(trace);
@@ -1156,6 +1318,8 @@ async function handleApi(req, res, pathname) {
       goal: trace.goal,
       events: trace.events
     }, "LLM planner");
+    workflow.workspaceId = trace.workspaceId;
+    workflow.createdBy = req.headers["x-user-email"] || body.createdBy || null;
     trace.workflowId = workflow.id;
     db.traces.unshift(trace);
     db.workflows.unshift(workflow);
@@ -1166,10 +1330,11 @@ async function handleApi(req, res, pathname) {
   const runMatch = pathname.match(/^\/api\/workflows\/([^/]+)\/runs$/);
   if (req.method === "POST" && runMatch) {
     const body = await readBody(req);
-    const workflow = db.workflows.find(item => item.id === runMatch[1]);
+    const workflow = scopedItems(db.workflows, workspaceId).find(item => item.id === runMatch[1]);
     if (!workflow) return sendJson(res, 404, { error: "Workflow not found" });
 
     const execution = await enrichExecutionArtifacts(createExecution(workflow, body.input), workflow);
+    execution.workspaceId = workspaceId || workflow.workspaceId || null;
     db.executions.unshift(execution);
     workflow.lastRun = execution.startedAt;
     await writeDb(db);
@@ -1178,14 +1343,14 @@ async function handleApi(req, res, pathname) {
 
   const executionMatch = pathname.match(/^\/api\/executions\/([^/]+)$/);
   if (req.method === "GET" && executionMatch) {
-    const execution = db.executions.find(item => item.id === executionMatch[1]);
+    const execution = scopedItems(db.executions, workspaceId).find(item => item.id === executionMatch[1]);
     return execution ? sendJson(res, 200, execution) : sendJson(res, 404, { error: "Execution not found" });
   }
 
   const decisionMatch = pathname.match(/^\/api\/executions\/([^/]+)\/decisions$/);
   if (req.method === "POST" && decisionMatch) {
     const body = await readBody(req);
-    const execution = db.executions.find(item => item.id === decisionMatch[1]);
+    const execution = scopedItems(db.executions, workspaceId).find(item => item.id === decisionMatch[1]);
     if (!execution) return sendJson(res, 404, { error: "Execution not found" });
 
     const workflow = db.workflows.find(item => item.id === execution.workflowId);

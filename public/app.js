@@ -2,6 +2,8 @@ const state = {
   workflows: [],
   memory: null,
   health: null,
+  session: JSON.parse(localStorage.getItem("flowguardSession") || "null"),
+  authMode: "signin",
   selectedWorkflowId: new URLSearchParams(window.location.search).get("workflow") || "design-to-pr",
   execution: null,
   teachOpen: false,
@@ -22,7 +24,11 @@ const icons = {
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(state.session?.workspace?.id ? { "X-Workspace-Id": state.session.workspace.id } : {}),
+      ...(state.session?.user?.email ? { "X-User-Email": state.session.user.email } : {})
+    },
     ...options
   });
 
@@ -63,6 +69,11 @@ function getActiveCheckpoint(workflow) {
 }
 
 function render() {
+  if (!state.session) {
+    renderSignIn();
+    return;
+  }
+
   const workflow = getSelectedWorkflow();
   const activeCheckpoint = getActiveCheckpoint(workflow);
   const totalCheckpoints = workflow?.checkpoints?.length || 0;
@@ -79,7 +90,12 @@ function render() {
           </div>
         </div>
         <div class="top-actions">
+          <div class="account-chip">
+            <strong>${escapeHtml(state.session.user.name)}</strong>
+            <span>${escapeHtml(state.session.workspace.name)}</span>
+          </div>
           <button class="button secondary" data-action="refresh">Sync recorder</button>
+          <button class="button secondary" data-action="sign-out">Sign out</button>
           <button class="button secondary" data-action="toggle-manage">${state.manageOpen ? "Close manager" : "Manage workflow"}</button>
           <button class="button secondary" data-action="toggle-teach">${state.teachOpen ? "Close recorder" : "Teach workflow"}</button>
           <button class="button" data-action="run">${icons.run} Run Workflow</button>
@@ -189,6 +205,56 @@ function render() {
         </section>
       </main>
     </div>
+  `;
+}
+
+function renderSignIn() {
+  const isSignup = state.authMode === "signup";
+
+  app.innerHTML = `
+    <main class="signin-page">
+      <section class="signin-panel">
+        <div class="brand">
+          <div class="brand-mark">FG</div>
+          <div>
+            <h1>FlowGuard</h1>
+            <p>Workspace sign-in</p>
+          </div>
+        </div>
+        <h2>${isSignup ? "Create your workspace." : "Welcome back."}</h2>
+        <p class="hero-text">${isSignup ? "Set up an account for your team's workflow library, checkpoint decisions, and execution history." : "Sign in to your FlowGuard workspace."}</p>
+        <div class="auth-tabs">
+          <button class="${!isSignup ? "active" : ""}" data-action="auth-mode" data-mode="signin">Sign in</button>
+          <button class="${isSignup ? "active" : ""}" data-action="auth-mode" data-mode="signup">Sign up</button>
+        </div>
+        <form class="teach-form" data-form="${isSignup ? "signup" : "signin"}">
+          ${isSignup ? `
+            <div class="field">
+              <label for="auth-name">Name</label>
+              <input id="auth-name" name="name" placeholder="Example: Alex Chen" />
+            </div>
+          ` : ""}
+          <div class="field">
+            <label for="auth-email">Email</label>
+            <input id="auth-email" name="email" type="email" placeholder="alex@company.com" />
+          </div>
+          <div class="field">
+            <label for="auth-password">Password</label>
+            <div class="password-field">
+              <input id="auth-password" name="password" type="password" placeholder="At least 6 characters" />
+              <button class="button secondary" type="button" data-action="toggle-password">Show</button>
+            </div>
+          </div>
+          ${isSignup ? `
+            <div class="field">
+              <label for="auth-workspace">Workspace</label>
+              <input id="auth-workspace" name="workspaceName" placeholder="Example: Design Systems Team" />
+            </div>
+          ` : ""}
+          <button class="button" type="submit">${isSignup ? "Create account" : "Sign in"}</button>
+        </form>
+      </section>
+    </main>
   `;
 }
 
@@ -501,6 +567,10 @@ function renderGitHubArtifact(execution) {
 }
 
 async function load() {
+  if (!state.session) {
+    render();
+    return;
+  }
   const [workflows, memory, health] = await Promise.all([
     api("/api/workflows"),
     api("/api/memory"),
@@ -512,6 +582,45 @@ async function load() {
   if (!state.workflows.some(workflow => workflow.id === state.selectedWorkflowId)) {
     state.selectedWorkflowId = state.workflows[0]?.id;
   }
+  render();
+}
+
+async function signUp(form) {
+  const formData = new FormData(form);
+  const session = await api("/api/auth/signup", {
+    method: "POST",
+    body: JSON.stringify({
+      name: formData.get("name"),
+      email: formData.get("email"),
+      password: formData.get("password"),
+      workspaceName: formData.get("workspaceName")
+    })
+  });
+  state.session = session;
+  localStorage.setItem("flowguardSession", JSON.stringify(session));
+  await load();
+}
+
+async function signIn(form) {
+  const formData = new FormData(form);
+  const session = await api("/api/auth/signin", {
+    method: "POST",
+    body: JSON.stringify({
+      email: formData.get("email"),
+      password: formData.get("password")
+    })
+  });
+  state.session = session;
+  localStorage.setItem("flowguardSession", JSON.stringify(session));
+  await load();
+}
+
+function signOut() {
+  localStorage.removeItem("flowguardSession");
+  state.session = null;
+  state.workflows = [];
+  state.memory = null;
+  state.execution = null;
   render();
 }
 
@@ -643,6 +752,20 @@ app.addEventListener("click", event => {
     state.teachOpen = !state.teachOpen;
     render();
   }
+  if (action === "sign-out") {
+    signOut();
+  }
+  if (action === "auth-mode") {
+    state.authMode = target.dataset.mode;
+    render();
+  }
+  if (action === "toggle-password") {
+    const input = document.querySelector("#auth-password");
+    if (input) {
+      input.type = input.type === "password" ? "text" : "password";
+      target.textContent = input.type === "password" ? "Show" : "Hide";
+    }
+  }
   if (action === "toggle-manage") {
     state.manageOpen = !state.manageOpen;
     render();
@@ -689,6 +812,20 @@ app.addEventListener("click", event => {
 });
 
 app.addEventListener("submit", event => {
+  const signInForm = event.target.closest("[data-form='signin']");
+  if (signInForm) {
+    event.preventDefault();
+    signIn(signInForm).catch(error => alert(error.message));
+    return;
+  }
+
+  const signUpForm = event.target.closest("[data-form='signup']");
+  if (signUpForm) {
+    event.preventDefault();
+    signUp(signUpForm).catch(error => alert(error.message));
+    return;
+  }
+
   const teachForm = event.target.closest("[data-form='teach']");
   if (teachForm) {
     event.preventDefault();

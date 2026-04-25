@@ -8,14 +8,15 @@ FlowGuard is a hackathon-ready MVP for recording professional workflows, convert
 
 The default demo is **Design-to-PR Guardrail Agent**:
 
-1. Review a recorded human handoff workflow.
-2. Enter a fresh run request, such as "Use the latest Figma button handoff and prepare a PR draft only."
-3. Run the multi-agent workflow.
-4. Watch the execution timeline pause at a checkpoint.
-5. Review the generated execution package: branch, files, patch preview, test command, PR title, and Slack draft.
-6. Approve, reject, edit instruction, or ask why the agent paused.
-7. See generated PR and Slack artifacts.
-8. Reject a checkpoint to trigger the Agent Failure Explanation.
+1. Sign into a lightweight workspace.
+2. Review a recorded human handoff workflow.
+3. Enter a fresh run request, such as "Use the latest Figma button handoff and prepare a PR draft only."
+4. Run the multi-agent workflow.
+5. Watch the execution timeline pause at a checkpoint.
+6. Review the generated execution package: branch, files, patch preview, test command, PR title, and Slack draft.
+7. Approve, reject, edit instruction, or ask why the agent paused.
+8. See generated PR and Slack artifacts.
+9. Reject a checkpoint to trigger the Agent Failure Explanation.
 
 The recorded workflow is the reusable procedure. The run request is what changes this time.
 
@@ -67,6 +68,19 @@ Teams can clean up outdated workflows directly in the app:
 5. Click **Delete** to remove stale workflows and their saved runs.
 
 This is useful after a team changes process, migrates tools, or stops using an old recorded trace.
+
+## Workspace Accounts
+
+FlowGuard includes lightweight workspace accounts:
+
+- name
+- email
+- workspace name
+- password
+
+The browser stores the verified session in `localStorage`, and MongoDB stores `users` and `workspaces`. Passwords are hashed with Node's built-in `crypto.scryptSync`; plaintext passwords are not stored.
+
+Workflows, traces, executions, and memory counts are scoped to the selected workspace.
 
 ## Flexible Replay
 
@@ -218,6 +232,8 @@ GET  /api/workflows
 GET  /api/health
 GET  /api/memory
 POST /api/admin/reset-demo
+POST /api/auth/signup
+POST /api/auth/signin
 GET  /api/workflows/:id
 POST /api/workflows
 PUT  /api/workflows/:id
