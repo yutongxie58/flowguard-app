@@ -19,7 +19,8 @@ const icons = {
   approve: "✓",
   reject: "×",
   edit: "✎",
-  why: "?"
+  why: "?",
+  signOut: "⇥"
 };
 
 async function api(path, options = {}) {
@@ -68,6 +69,15 @@ function getActiveCheckpoint(workflow) {
   return workflow.checkpoints.find(checkpoint => checkpoint.id === state.execution.currentCheckpointId);
 }
 
+function getInitials(name) {
+  return String(name || "")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map(part => part[0]?.toUpperCase() || "")
+    .join("") || "FG";
+}
+
 function render() {
   if (!state.session) {
     renderSignIn();
@@ -89,16 +99,21 @@ function render() {
             <p>Teach once. Replay safely.</p>
           </div>
         </div>
-        <div class="top-actions">
-          <div class="account-chip">
-            <strong>${escapeHtml(state.session.user.name)}</strong>
-            <span>${escapeHtml(state.session.workspace.name)}</span>
+        <div class="topbar-right">
+          <div class="top-actions">
+            <button class="button secondary" data-action="refresh">Sync recorder</button>
+            <button class="button secondary" data-action="toggle-manage">${state.manageOpen ? "Close manager" : "Manage workflow"}</button>
+            <button class="button secondary" data-action="toggle-teach">${state.teachOpen ? "Close recorder" : "Teach workflow"}</button>
+            <button class="button" data-action="run">${icons.run} Run Workflow</button>
           </div>
-          <button class="button secondary" data-action="refresh">Sync recorder</button>
-          <button class="button secondary" data-action="sign-out">Sign out</button>
-          <button class="button secondary" data-action="toggle-manage">${state.manageOpen ? "Close manager" : "Manage workflow"}</button>
-          <button class="button secondary" data-action="toggle-teach">${state.teachOpen ? "Close recorder" : "Teach workflow"}</button>
-          <button class="button" data-action="run">${icons.run} Run Workflow</button>
+          <div class="account-menu" aria-label="Account">
+            <div class="profile-avatar" aria-hidden="true">${escapeHtml(getInitials(state.session.user.name))}</div>
+            <div class="account-chip">
+              <strong>${escapeHtml(state.session.user.name)}</strong>
+              <span>${escapeHtml(state.session.workspace.name)}</span>
+            </div>
+            <button class="icon-button" data-action="sign-out" aria-label="Sign out" title="Sign out">${icons.signOut}</button>
+          </div>
         </div>
       </header>
 

@@ -63,10 +63,19 @@ button {
   z-index: 10;
 }
 
+.topbar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  margin-left: auto;
+}
+
 .brand {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex: 0 0 auto;
 }
 
 .brand-mark {
@@ -96,25 +105,71 @@ button {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.account-menu {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-left: 1px solid var(--line);
+  padding-left: 14px;
+  flex: 0 0 auto;
+}
+
+.profile-avatar {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--green-dark);
+  color: white;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
 .account-chip {
   display: grid;
   gap: 1px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: white;
-  padding: 6px 10px;
-  min-height: 38px;
+  min-width: 116px;
 }
 
 .account-chip strong {
   font-size: 12px;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .account-chip span {
   color: var(--muted);
   font-size: 11px;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.icon-button:hover {
+  border-color: var(--green);
+  color: var(--green-dark);
 }
 
 .button {
@@ -812,9 +867,31 @@ button {
 
 @media (max-width: 720px) {
   .topbar {
-    align-items: flex-start;
+    align-items: stretch;
     flex-direction: column;
     padding: 16px;
+  }
+
+  .topbar-right {
+    align-items: stretch;
+    flex-direction: column-reverse;
+    gap: 12px;
+    margin-left: 0;
+  }
+
+  .top-actions {
+    justify-content: stretch;
+  }
+
+  .top-actions .button {
+    flex: 1 1 150px;
+    justify-content: center;
+  }
+
+  .account-menu {
+    align-self: flex-end;
+    border-left: 0;
+    padding-left: 0;
   }
 
   .main {
