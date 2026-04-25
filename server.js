@@ -17,6 +17,7 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
 const ALLOW_DEMO_RESET = process.env.ALLOW_DEMO_RESET === "true";
+const HOST = process.env.HOST || "127.0.0.1";
 const COLLECTIONS = ["workflows", "executions", "traces", "users", "workspaces"];
 let mongoClient = null;
 let mongoDb = null;
@@ -1752,7 +1753,7 @@ const server = http.createServer(async (req, res) => {
 
 async function start() {
   await connectStorage();
-  server.listen(PORT, () => {
+  server.listen(PORT, HOST, () => {
     console.log(`FlowGuard running at http://localhost:${PORT}`);
     console.log(`Storage: ${storageMode}${storageMode === "mongodb" ? ` (${MONGODB_DB})` : ""}`);
   });
