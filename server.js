@@ -379,18 +379,29 @@ async function connectStorage() {
     throw new Error("MONGODB_URI still contains placeholder text. Update .env or unset the exported shell variable.");
   }
 
-  mongoClient = new MongoClient(MONGODB_URI);
-  await mongoClient.connect();
-  mongoDb = mongoClient.db(MONGODB_DB);
-  storageMode = "mongodb";
+  try {
+    mongoClient = new MongoClient(MONGODB_URI, {
+      connectTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 5000
+    });
+    await mongoClient.connect();
+    mongoDb = mongoClient.db(MONGODB_DB);
+    storageMode = "mongodb";
 
-  for (const collectionName of COLLECTIONS) {
-    await mongoDb.collection(collectionName).createIndex({ id: 1 }, { unique: true });
-  }
+    for (const collectionName of COLLECTIONS) {
+      await mongoDb.collection(collectionName).createIndex({ id: 1 }, { unique: true });
+    }
 
-  const workflowCount = await mongoDb.collection("workflows").countDocuments();
-  if (workflowCount === 0) {
-    await writeDb(seedData);
+    const workflowCount = await mongoDb.collection("workflows").countDocuments();
+    if (workflowCount === 0) {
+      await writeDb(seedData);
+    }
+  } catch (error) {
+    console.warn(`MongoDB unavailable, using local JSON storage: ${error.message}`);
+    mongoClient = null;
+    mongoDb = null;
+    storageMode = "json";
+    ensureJsonDb();
   }
 }
 
