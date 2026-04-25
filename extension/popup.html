@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FlowGuard Recorder</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header>
+        <div class="mark">FG</div>
+        <div>
+          <h1>FlowGuard Recorder</h1>
+          <p id="status">Idle</p>
+        </div>
+      </header>
+
+      <label>
+        Workflow name
+        <input id="name" value="Recorded Browser Workflow" />
+      </label>
+
+      <label>
+        Goal
+        <textarea id="goal">Replay this captured browser workflow with safety checkpoints.</textarea>
+      </label>
+
+      <div class="stats">
+        <strong id="event-count">0</strong>
+        <span>events captured</span>
+      </div>
+
+      <label>
+        Human note
+        <textarea id="note" placeholder="Example: this step needs design judgment"></textarea>
+      </label>
+
+      <div class="actions">
+        <button id="start">Start</button>
+        <button id="stop" class="secondary">Stop</button>
+        <button id="note-button" class="secondary">Add note</button>
+        <button id="send" class="wide">Send to FlowGuard</button>
+        <button id="clear" class="ghost wide">Clear trace</button>
+      </div>
+
+      <p class="hint">Values are redacted. FlowGuard records URLs, labels, selectors, app names, and notes.</p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
