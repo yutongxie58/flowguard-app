@@ -98,6 +98,8 @@ Use it during judging:
 4. Show the run/decision counts update.
 5. Say: "MongoDB stores the team's workflow memory: traces, agent runs, and every human approval decision."
 
+During testing, set `ALLOW_DEMO_RESET=true` to show a **Reset demo data** button in the Agent memory panel. It clears workflows, traces, and executions, then restores the seed workflows.
+
 ## Production-Ready Paths
 
 FlowGuard keeps working locally with no secrets, but the codebase now has optional production integrations. External write actions should stay behind checkpoint approval.
@@ -215,6 +217,7 @@ data/                  Local workflow/execution store, generated on first run
 GET  /api/workflows
 GET  /api/health
 GET  /api/memory
+POST /api/admin/reset-demo
 GET  /api/workflows/:id
 POST /api/workflows
 PUT  /api/workflows/:id

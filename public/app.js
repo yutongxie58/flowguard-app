@@ -272,6 +272,7 @@ function renderMemoryPanel() {
         <span>${escapeHtml(memory.database)}</span>
         <span>${escapeHtml(lastDecision)}</span>
       </div>
+      ${state.health?.allowDemoReset ? `<button class="button secondary reset-button" data-action="reset-demo">Reset demo data</button>` : ""}
     </div>
   `;
 }
@@ -622,6 +623,17 @@ async function deleteWorkflow() {
   render();
 }
 
+async function resetDemoData() {
+  const shouldReset = window.confirm("Reset demo data? This clears workflows, traces, and executions, then restores seed workflows.");
+  if (!shouldReset) return;
+
+  await api("/api/admin/reset-demo", { method: "POST" });
+  state.execution = null;
+  state.selectedWorkflowId = "design-to-pr";
+  state.runRequest = "";
+  await refreshWorkflows();
+}
+
 app.addEventListener("click", event => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
@@ -637,6 +649,9 @@ app.addEventListener("click", event => {
   }
   if (action === "refresh") {
     refreshWorkflows().catch(error => alert(error.message));
+  }
+  if (action === "reset-demo") {
+    resetDemoData().catch(error => alert(error.message));
   }
   if (action === "select-workflow") {
     state.selectedWorkflowId = target.dataset.id;

@@ -15,6 +15,7 @@ const MONGODB_DB = process.env.MONGODB_DB || "flowguard";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const ALLOW_DEMO_RESET = process.env.ALLOW_DEMO_RESET === "true";
 const COLLECTIONS = ["workflows", "executions", "traces"];
 let mongoClient = null;
 let mongoDb = null;
@@ -273,6 +274,10 @@ function normalizeDb(db) {
     }
   }
   return db;
+}
+
+function freshSeedData() {
+  return JSON.parse(JSON.stringify(seedData));
 }
 
 function readJsonDb() {
@@ -1052,7 +1057,23 @@ async function handleApi(req, res, pathname) {
       plannerLastError: lastPlannerError,
       model: OPENAI_API_KEY ? OPENAI_MODEL : null,
       githubIntegration: true,
-      githubAuthenticated: Boolean(GITHUB_TOKEN)
+      githubAuthenticated: Boolean(GITHUB_TOKEN),
+      allowDemoReset: ALLOW_DEMO_RESET
+    });
+  }
+
+  if (req.method === "POST" && pathname === "/api/admin/reset-demo") {
+    if (!ALLOW_DEMO_RESET) {
+      return sendJson(res, 403, { error: "Demo reset is disabled. Set ALLOW_DEMO_RESET=true to enable it." });
+    }
+    const resetDb = freshSeedData();
+    await writeDb(resetDb);
+    return sendJson(res, 200, {
+      ok: true,
+      storage: storageMode,
+      workflows: resetDb.workflows.length,
+      traces: resetDb.traces.length,
+      executions: resetDb.executions.length
     });
   }
 

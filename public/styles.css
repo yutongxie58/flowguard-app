@@ -391,6 +391,12 @@ button {
   align-items: flex-start;
 }
 
+.reset-button {
+  width: 100%;
+  justify-content: center;
+  margin-top: 10px;
+}
+
 .workflow-item {
   width: 100%;
   text-align: left;
