@@ -20,6 +20,7 @@ function render(state) {
   countEl.textContent = state.events?.length || 0;
   const hasWorkspace = Boolean(state.session?.workspace?.id);
   workspaceNameEl.textContent = hasWorkspace ? state.session.workspace.name : "Not connected";
+  workspaceNameEl.dataset.connected = hasWorkspace ? "true" : "false";
   syncWorkspaceButton.textContent = hasWorkspace ? "Resync" : "Sign in";
   nameEl.value = state.name || nameEl.value;
   goalEl.value = state.goal || goalEl.value;
@@ -38,12 +39,15 @@ async function refresh() {
 }
 
 syncWorkspaceButton.addEventListener("click", async () => {
-  statusEl.textContent = "Checking FlowGuard sign-in...";
-  const state = await sendMessage({ type: "REFRESH_FLOWGUARD_SESSION" });
+  const isConnected = workspaceNameEl.dataset.connected === "true";
+  statusEl.textContent = isConnected ? "Checking FlowGuard sign-in..." : "Opening FlowGuard sign-in...";
+  const state = await sendMessage({
+    type: isConnected ? "REFRESH_FLOWGUARD_SESSION" : "OPEN_FLOWGUARD_SIGNIN"
+  });
   render(state);
   statusEl.textContent = state.session?.workspace?.id
     ? "Workspace synced"
-    : "Sign in to FlowGuard, then click Sync";
+    : "Sign in to FlowGuard, then reopen this popup";
 });
 
 startButton.addEventListener("click", async () => {

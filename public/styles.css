@@ -229,6 +229,17 @@ button {
   letter-spacing: 0;
 }
 
+.recorder-connect-banner {
+  margin-top: 14px;
+  border: 1px solid #b8d8c4;
+  border-radius: 8px;
+  background: var(--mint);
+  color: var(--green-dark);
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .auth-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -48,6 +48,7 @@ async function refreshStoredSession() {
     const response = await fetch("http://localhost:5173/api/recorder/session");
     const result = await response.json();
     if (result.session?.workspace?.id) return setState({ session: result.session });
+    if (response.ok) return setState({ session: null });
   } catch {
     // FlowGuard may not be running yet. Keep the last known extension state.
   }
@@ -91,9 +92,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "REFRESH_FLOWGUARD_SESSION") {
       const state = await refreshStoredSession();
       if (!state.session?.workspace?.id) {
-        chrome.tabs.create({ url: "http://localhost:5173" });
+        chrome.tabs.create({ url: "http://localhost:5173/?recorder=connect" });
       }
       sendResponse(state);
+      return;
+    }
+
+    if (message.type === "OPEN_FLOWGUARD_SIGNIN") {
+      await setState({ session: null });
+      chrome.tabs.create({ url: "http://localhost:5173/?recorder=connect" });
+      sendResponse(await getState());
       return;
     }
 
@@ -150,7 +158,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "SEND_TO_FLOWGUARD") {
       const state = await refreshStoredSession();
       if (!state.session?.workspace?.id) {
-        chrome.tabs.create({ url: "http://localhost:5173" });
+        chrome.tabs.create({ url: "http://localhost:5173/?recorder=connect" });
         sendResponse({ ok: false, error: "Sign in to FlowGuard, then click Sync workspace." });
         return;
       }

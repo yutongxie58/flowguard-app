@@ -43,7 +43,7 @@ async function api(path, options = {}) {
 }
 
 function syncRecorderSession() {
-  fetch("/api/recorder/session", {
+  return fetch("/api/recorder/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session: state.session })
@@ -240,6 +240,7 @@ function render() {
 
 function renderSignIn() {
   const isSignup = state.authMode === "signup";
+  const recorderConnect = new URLSearchParams(window.location.search).get("recorder") === "connect";
 
   app.innerHTML = `
     <main class="signin-page">
@@ -252,6 +253,11 @@ function renderSignIn() {
           </div>
         </div>
         <h2>${isSignup ? "Create your workspace." : "Welcome back."}</h2>
+        ${recorderConnect ? `
+          <div class="recorder-connect-banner">
+            Sign in to connect the FlowGuard Recorder to your workspace.
+          </div>
+        ` : ""}
         <p class="hero-text">${isSignup ? "Set up an account for your team's workflow library, checkpoint decisions, and execution history." : "Sign in to your FlowGuard workspace."}</p>
         <div class="auth-tabs">
           <button class="${!isSignup ? "active" : ""}" data-action="auth-mode" data-mode="signin">Sign in</button>
@@ -737,10 +743,10 @@ async function signIn(form) {
   await load();
 }
 
-function signOut() {
+async function signOut() {
   localStorage.removeItem("flowguardSession");
   state.session = null;
-  syncRecorderSession();
+  await syncRecorderSession();
   state.workflows = [];
   state.memory = null;
   state.execution = null;
@@ -899,7 +905,7 @@ app.addEventListener("click", event => {
     render();
   }
   if (action === "sign-out") {
-    signOut();
+    signOut().catch(error => alert(error.message));
   }
   if (action === "auth-mode") {
     state.authMode = target.dataset.mode;
