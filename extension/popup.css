@@ -99,6 +99,7 @@ textarea {
 .workspace {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -106,6 +107,12 @@ textarea {
   padding: 9px 10px;
   margin-top: 8px;
   font-size: 12px;
+}
+
+.workspace div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
 }
 
 .workspace span {
@@ -117,6 +124,15 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mini-button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--green-dark);
+  font-size: 12px;
 }
 
 .actions {

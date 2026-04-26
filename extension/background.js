@@ -89,7 +89,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === "REFRESH_FLOWGUARD_SESSION") {
-      sendResponse(await refreshStoredSession());
+      const state = await refreshStoredSession();
+      if (!state.session?.workspace?.id) {
+        chrome.tabs.create({ url: "http://localhost:5173" });
+      }
+      sendResponse(state);
       return;
     }
 
@@ -145,6 +149,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "SEND_TO_FLOWGUARD") {
       const state = await refreshStoredSession();
+      if (!state.session?.workspace?.id) {
+        chrome.tabs.create({ url: "http://localhost:5173" });
+        sendResponse({ ok: false, error: "Sign in to FlowGuard, then click Sync workspace." });
+        return;
+      }
       const response = await fetch("http://localhost:5173/api/traces", {
         method: "POST",
         headers: sessionHeaders(state.session),

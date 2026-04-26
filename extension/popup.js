@@ -9,6 +9,7 @@ const stopButton = document.querySelector("#stop");
 const sendButton = document.querySelector("#send");
 const clearButton = document.querySelector("#clear");
 const noteButton = document.querySelector("#note-button");
+const syncWorkspaceButton = document.querySelector("#sync-workspace");
 
 function sendMessage(message) {
   return chrome.runtime.sendMessage(message);
@@ -17,7 +18,9 @@ function sendMessage(message) {
 function render(state) {
   statusEl.textContent = state.recording ? "Recording browser workflow" : "Idle";
   countEl.textContent = state.events?.length || 0;
-  workspaceNameEl.textContent = state.session?.workspace?.name || "Open FlowGuard to sync";
+  const hasWorkspace = Boolean(state.session?.workspace?.id);
+  workspaceNameEl.textContent = hasWorkspace ? state.session.workspace.name : "Not connected";
+  syncWorkspaceButton.textContent = hasWorkspace ? "Resync" : "Sign in";
   nameEl.value = state.name || nameEl.value;
   goalEl.value = state.goal || goalEl.value;
   startButton.disabled = state.recording;
@@ -30,9 +33,18 @@ async function refresh() {
   const state = await sendMessage({ type: "GET_STATE" });
   render(state);
   if (!state.session?.workspace?.id) {
-    statusEl.textContent = "Open FlowGuard, sign in, then reopen this popup";
+    statusEl.textContent = "Click Sign in to connect a workspace";
   }
 }
+
+syncWorkspaceButton.addEventListener("click", async () => {
+  statusEl.textContent = "Checking FlowGuard sign-in...";
+  const state = await sendMessage({ type: "REFRESH_FLOWGUARD_SESSION" });
+  render(state);
+  statusEl.textContent = state.session?.workspace?.id
+    ? "Workspace synced"
+    : "Sign in to FlowGuard, then click Sync";
+});
 
 startButton.addEventListener("click", async () => {
   statusEl.textContent = "Syncing FlowGuard workspace...";
