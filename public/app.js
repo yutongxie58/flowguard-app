@@ -9,7 +9,8 @@ const state = {
   teachOpen: false,
   manageOpen: false,
   runRequest: "",
-  instructionDraft: ""
+  instructionDraft: "",
+  weeklyInputsByWorkflow: {}
 };
 
 const app = document.querySelector("#app");
@@ -290,7 +291,7 @@ function renderSignIn() {
 function renderRunRequest(workflow) {
   if (!workflow) return "";
   if (isWeeklyReportWorkflow(workflow)) {
-    const inputs = workflow.inputs || {};
+    const inputs = { ...(workflow.inputs || {}), ...(state.weeklyInputsByWorkflow[workflow.id] || {}) };
     const reportScope = inputs.reportScope || "repo";
     return `
       <section class="run-request weekly-report-inputs">
@@ -313,7 +314,6 @@ function renderRunRequest(workflow) {
           <div class="field weekly-user-field ${reportScope === "personal" ? "" : "hidden"}">
             <label for="weekly-github-user">GitHub username</label>
             <input id="weekly-github-user" data-weekly-input="githubUser" value="${escapeHtml(inputs.githubUser || "")}" placeholder="username for personal reports" />
-            <p class="field-hint">Used when scope is Personal GitHub.</p>
           </div>
           <div class="field">
             <label for="weekly-range">Date range</label>
@@ -772,6 +772,12 @@ async function runWorkflow() {
   document.querySelectorAll("[data-weekly-input]").forEach(field => {
     weeklyInput[field.dataset.weeklyInput] = field.value.trim();
   });
+  if (isWeeklyReportWorkflow(workflow)) {
+    state.weeklyInputsByWorkflow[workflow.id] = {
+      ...(state.weeklyInputsByWorkflow[workflow.id] || {}),
+      ...weeklyInput
+    };
+  }
   state.execution = await api(`/api/workflows/${workflow.id}/runs`, {
     method: "POST",
     body: JSON.stringify({ input: { ...workflow.inputs, ...weeklyInput, runInstruction } })
@@ -872,6 +878,13 @@ async function resetDemoData() {
 
 function syncWeeklyScopeFields() {
   const scope = document.querySelector("#weekly-scope")?.value || "repo";
+  const workflow = getSelectedWorkflow();
+  if (workflow && isWeeklyReportWorkflow(workflow)) {
+    state.weeklyInputsByWorkflow[workflow.id] = {
+      ...(state.weeklyInputsByWorkflow[workflow.id] || {}),
+      reportScope: scope
+    };
+  }
   document.querySelector(".weekly-repo-field")?.classList.toggle("hidden", scope === "personal");
   document.querySelector(".weekly-user-field")?.classList.toggle("hidden", scope !== "personal");
 }
