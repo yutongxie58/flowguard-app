@@ -829,6 +829,10 @@ button {
   min-width: 0;
 }
 
+.field.hidden {
+  display: none;
+}
+
 .field label {
   font-weight: 800;
   font-size: 13px;

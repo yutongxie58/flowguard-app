@@ -291,6 +291,7 @@ function renderRunRequest(workflow) {
   if (!workflow) return "";
   if (isWeeklyReportWorkflow(workflow)) {
     const inputs = workflow.inputs || {};
+    const reportScope = inputs.reportScope || "repo";
     return `
       <section class="run-request weekly-report-inputs">
         <div class="run-request-copy">
@@ -299,8 +300,20 @@ function renderRunRequest(workflow) {
         </div>
         <div class="weekly-grid">
           <div class="field">
+            <label for="weekly-scope">Report scope</label>
+            <select id="weekly-scope" data-weekly-input="reportScope">
+              <option value="repo" ${(inputs.reportScope || "repo") === "repo" ? "selected" : ""}>Single repo</option>
+              <option value="personal" ${inputs.reportScope === "personal" ? "selected" : ""}>Personal GitHub</option>
+            </select>
+          </div>
+          <div class="field weekly-repo-field ${reportScope === "personal" ? "hidden" : ""}">
             <label for="weekly-repo">GitHub repo</label>
             <input id="weekly-repo" data-weekly-input="repo" value="${escapeHtml(inputs.repo || "")}" placeholder="owner/repo" />
+          </div>
+          <div class="field weekly-user-field ${reportScope === "personal" ? "" : "hidden"}">
+            <label for="weekly-github-user">GitHub username</label>
+            <input id="weekly-github-user" data-weekly-input="githubUser" value="${escapeHtml(inputs.githubUser || "")}" placeholder="username for personal reports" />
+            <p class="field-hint">Used when scope is Personal GitHub.</p>
           </div>
           <div class="field">
             <label for="weekly-range">Date range</label>
@@ -663,8 +676,9 @@ function renderWeeklyReportArtifact(execution) {
     <div class="artifact weekly-report-artifact">
       <strong>Weekly report draft</strong>
       ${weekly.ok && activity ? `
-        <div class="artifact-kv"><span>Repo</span><code>${escapeHtml(weekly.repo)}</code></div>
-        <div class="artifact-kv"><span>Activity</span><code>${activity.mergedPulls.length} PRs / ${activity.commits.length} commits / ${activity.closedIssues.length} closed issues</code></div>
+        <div class="artifact-kv"><span>${weekly.reportScope === "personal" ? "GitHub user" : "Repo"}</span><code>${escapeHtml(weekly.repo)}</code></div>
+        <div class="artifact-kv"><span>Activity</span><code>${activity.mergedPulls.length} PRs / ${activity.commitCount ?? activity.commits.length} commits / ${activity.closedIssues.length} closed issues</code></div>
+        ${weekly.reportScope === "personal" ? `<div class="artifact-kv"><span>Sources</span><code>${activity.source?.contributionGraph ? "GitHub contribution graph" : `${activity.source?.publicEvents || 0} public events / ${activity.source?.ownedRepoCommits || 0} owned-repo commits`}</code></div>` : ""}
       ` : `<p>${escapeHtml(weekly.error || "GitHub activity is not available yet.")}</p>`}
       ${weekly.reportText ? `<pre class="report-preview">${escapeHtml(weekly.reportText)}</pre>` : ""}
       ${delivery ? `<p><b>${escapeHtml(delivery.status)}:</b> ${escapeHtml(delivery.message)}</p>` : `<p>Waiting for approval before sending or drafting the final update.</p>`}
@@ -856,6 +870,12 @@ async function resetDemoData() {
   await refreshWorkflows();
 }
 
+function syncWeeklyScopeFields() {
+  const scope = document.querySelector("#weekly-scope")?.value || "repo";
+  document.querySelector(".weekly-repo-field")?.classList.toggle("hidden", scope === "personal");
+  document.querySelector(".weekly-user-field")?.classList.toggle("hidden", scope !== "personal");
+}
+
 app.addEventListener("click", event => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
@@ -922,6 +942,10 @@ app.addEventListener("click", event => {
       render();
     }
   }
+});
+
+app.addEventListener("change", event => {
+  if (event.target.matches("#weekly-scope")) syncWeeklyScopeFields();
 });
 
 app.addEventListener("submit", event => {

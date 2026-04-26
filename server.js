@@ -214,7 +214,9 @@ const seedData = {
       template: "Weekly report workflow",
       goal: "Generate a weekly engineering status update from GitHub activity, human notes, blockers, and next steps.",
       inputs: {
+        reportScope: "repo",
         repo: "flowguard-demo/platform",
+        githubUser: "",
         dateRange: "this-week",
         audience: "team",
         channel: "Slack",
@@ -229,7 +231,7 @@ const seedData = {
         { id: "checkpoint", name: "Checkpoint Agent", role: "Reviews external-send risk.", confidence: 95 }
       ],
       recordedSteps: [
-        { id: "wr-1", source: "Human trace", title: "Pull this week's GitHub activity", detail: "Collect merged PRs, commits, closed issues, and opened issues from the selected repo.", risk: "low", judgment: false },
+        { id: "wr-1", source: "Human trace", title: "Pull this week's GitHub activity", detail: "Collect merged PRs, commits, closed issues, and opened issues from a selected repo or GitHub user.", risk: "low", judgment: false },
         { id: "wr-2", source: "Human trace", title: "Summarize likely completed work", detail: "Group GitHub activity into completed, in progress, risks, and links.", risk: "low", judgment: true },
         { id: "wr-3", source: "Human trace", title: "Add blockers and next steps", detail: "Let the user add or edit blockers, extra completed work, and follow-ups.", risk: "medium", judgment: true },
         { id: "wr-4", source: "Human trace", title: "Generate weekly report", detail: "Create a concise team, manager, or public-facing update.", risk: "medium", judgment: true },
@@ -292,6 +294,8 @@ function normalizeDb(db) {
       workflow.plan = weeklySeed.plan;
       workflow.checkpoints = weeklySeed.checkpoints;
       workflow.inputs.dateRange ||= "this-week";
+      workflow.inputs.reportScope ||= "repo";
+      workflow.inputs.githubUser ||= "";
       workflow.inputs.audience ||= "team";
       workflow.inputs.channel ||= "Slack";
       if (!workflow.inputs.slackChannel || workflow.inputs.slackChannel === "#weekly-status") workflow.inputs.slackChannel = "#weekly-report";
@@ -1043,6 +1047,56 @@ async function fetchGitHubEndpoint(repo, endpoint, params = {}) {
   return Array.isArray(body) ? body : [];
 }
 
+async function fetchGitHubUserEvents(username, params = {}) {
+  const url = new URL(`https://api.github.com/users/${username}/events/public`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
+  }
+
+  const response = await fetch(url, { headers: githubHeaders() });
+  const body = await response.json().catch(() => []);
+  if (!response.ok) throw new Error(body.message || "GitHub user activity lookup failed");
+  return Array.isArray(body) ? body : [];
+}
+
+async function fetchGitHubUserEventPages(username, pages = 3) {
+  const pageNumbers = Array.from({ length: pages }, (_, index) => index + 1);
+  const results = await Promise.allSettled(
+    pageNumbers.map(page => fetchGitHubUserEvents(username, { per_page: 100, page }))
+  );
+  return results.flatMap(result => result.status === "fulfilled" ? result.value : []);
+}
+
+async function fetchGitHubUserRepos(username, params = {}) {
+  const url = new URL(`https://api.github.com/users/${username}/repos`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
+  }
+
+  const response = await fetch(url, { headers: githubHeaders() });
+  const body = await response.json().catch(() => []);
+  if (!response.ok) throw new Error(body.message || "GitHub repository list lookup failed");
+  return Array.isArray(body) ? body : [];
+}
+
+async function fetchGitHubGraphQL(query, variables = {}) {
+  if (!GITHUB_TOKEN) throw new Error("GitHub token is required for contribution graph lookup.");
+
+  const response = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      ...githubHeaders(),
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ query, variables })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.errors?.length) {
+    throw new Error(body.errors?.[0]?.message || body.message || "GitHub contribution graph lookup failed");
+  }
+  return body.data;
+}
+
 function inRange(value, range) {
   if (!value) return false;
   const date = new Date(value);
@@ -1085,6 +1139,68 @@ function simplifyIssue(item) {
   };
 }
 
+function simplifyPersonalEvent(event) {
+  const repo = event.repo?.name || "unknown/repo";
+  const payload = event.payload || {};
+  const createdAt = event.created_at;
+
+  if (event.type === "PushEvent") {
+    return (payload.commits || []).slice(0, 3).map(commit => ({
+      type: "commit",
+      repo,
+      sha: String(commit.sha || "").slice(0, 7),
+      title: commit.message?.split("\n")[0] || "Commit",
+      author: event.actor?.login || "unknown",
+      committedAt: createdAt,
+      url: `https://github.com/${repo}/commit/${commit.sha}`,
+      createdAt
+    }));
+  }
+
+  if (event.type === "PullRequestEvent") {
+    const pr = payload.pull_request || {};
+    return [{
+      type: payload.action === "closed" && pr.merged ? "merged_pr" : "pull_request",
+      repo,
+      number: pr.number,
+      title: pr.title || "Pull request",
+      author: event.actor?.login || "unknown",
+      action: payload.action,
+      url: pr.html_url || `https://github.com/${repo}/pulls`,
+      createdAt
+    }];
+  }
+
+  if (event.type === "IssuesEvent") {
+    const issue = payload.issue || {};
+    return [{
+      type: "issue",
+      repo,
+      number: issue.number,
+      title: issue.title || "Issue",
+      author: event.actor?.login || "unknown",
+      action: payload.action,
+      url: issue.html_url || `https://github.com/${repo}/issues`,
+      createdAt,
+      closedAt: payload.action === "closed" ? createdAt : null
+    }];
+  }
+
+  if (event.type === "CreateEvent" && payload.ref_type === "repository") {
+    return [{
+      type: "repository",
+      repo,
+      title: `Created repository ${repo}`,
+      author: event.actor?.login || "unknown",
+      action: "created",
+      url: `https://github.com/${repo}`,
+      createdAt
+    }];
+  }
+
+  return [];
+}
+
 async function fetchGitHubWeeklyActivity(repo, input = {}) {
   const range = resolveDateRange(input);
   const [repoInfo, pulls, commits, issues] = await Promise.all([
@@ -1111,6 +1227,217 @@ async function fetchGitHubWeeklyActivity(repo, input = {}) {
   };
 }
 
+async function fetchOwnedRepoCommitsForUser(username, range) {
+  const repos = await fetchGitHubUserRepos(username, { type: "owner", sort: "pushed", direction: "desc", per_page: 25 });
+  const recentlyPushedRepos = repos
+    .filter(repo => inRange(repo.pushed_at, range))
+    .slice(0, 10);
+  const results = await Promise.allSettled(
+    recentlyPushedRepos.map(repo =>
+      fetchGitHubEndpoint(repo.full_name, "commits", {
+        author: username,
+        since: range.start.toISOString(),
+        until: range.end.toISOString(),
+        per_page: 20
+      }).then(commits => commits.map(commit => ({ ...simplifyCommit(commit), repo: repo.full_name, type: "commit" })))
+    )
+  );
+  return results.flatMap(result => result.status === "fulfilled" ? result.value : []);
+}
+
+function contributionRepoName(group) {
+  return group?.repository?.nameWithOwner || "unknown/repo";
+}
+
+async function fetchGitHubContributionActivity(username, input = {}) {
+  const range = resolveDateRange(input);
+  const cleanUsername = String(username || "").trim();
+  if (!cleanUsername || /\s/.test(cleanUsername)) {
+    throw new Error("Enter a GitHub username for personal reports.");
+  }
+
+  const query = `
+    query FlowGuardContributions($login: String!, $from: DateTime!, $to: DateTime!) {
+      user(login: $login) {
+        contributionsCollection(from: $from, to: $to) {
+          commitContributionsByRepository(maxRepositories: 25) {
+            repository { nameWithOwner url }
+            contributions(first: 100) {
+              nodes { occurredAt commitCount url }
+            }
+          }
+          pullRequestContributionsByRepository(maxRepositories: 25) {
+            repository { nameWithOwner }
+            contributions(first: 50) {
+              nodes {
+                occurredAt
+                pullRequest { number title url merged mergedAt author { login } }
+              }
+            }
+          }
+          issueContributionsByRepository(maxRepositories: 25) {
+            repository { nameWithOwner }
+            contributions(first: 50) {
+              nodes {
+                occurredAt
+                issue { number title url closed closedAt author { login } }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await fetchGitHubGraphQL(query, {
+    login: cleanUsername,
+    from: range.start.toISOString(),
+    to: range.end.toISOString()
+  });
+  const collection = data?.user?.contributionsCollection;
+  if (!collection) throw new Error("GitHub user not found.");
+
+  const commitGroups = collection.commitContributionsByRepository || [];
+  const commits = commitGroups.flatMap(group =>
+    (group.contributions?.nodes || []).map(node => {
+      const count = Number(node.commitCount || 1);
+      return {
+        type: "commit",
+        repo: contributionRepoName(group),
+        sha: count === 1 ? "commit" : `${count} commits`,
+        title: count === 1 ? "Created 1 commit" : `Created ${count} commits`,
+        author: cleanUsername,
+        committedAt: node.occurredAt,
+        createdAt: node.occurredAt,
+        url: node.url || group.repository?.url,
+        commitCount: count
+      };
+    })
+  );
+
+  const mergedPulls = (collection.pullRequestContributionsByRepository || []).flatMap(group =>
+    (group.contributions?.nodes || [])
+      .map(node => node.pullRequest ? ({ node, pr: node.pullRequest, repo: contributionRepoName(group) }) : null)
+      .filter(Boolean)
+      .filter(item => item.pr.merged)
+      .map(item => ({
+        type: "merged_pr",
+        repo: item.repo,
+        number: item.pr.number,
+        title: item.pr.title,
+        author: item.pr.author?.login || cleanUsername,
+        action: "merged",
+        url: item.pr.url,
+        createdAt: item.pr.mergedAt || item.node.occurredAt
+      }))
+  );
+
+  const issues = (collection.issueContributionsByRepository || []).flatMap(group =>
+    (group.contributions?.nodes || [])
+      .map(node => node.issue ? ({ node, issue: node.issue, repo: contributionRepoName(group) }) : null)
+      .filter(Boolean)
+      .map(item => ({
+        type: "issue",
+        repo: item.repo,
+        number: item.issue.number,
+        title: item.issue.title,
+        author: item.issue.author?.login || cleanUsername,
+        action: item.issue.closed ? "closed" : "opened",
+        url: item.issue.url,
+        createdAt: item.node.occurredAt,
+        closedAt: item.issue.closedAt
+      }))
+  );
+
+  const allItems = [...commits, ...mergedPulls, ...issues];
+  return {
+    repo: `@${cleanUsername}`,
+    scope: "personal",
+    username: cleanUsername,
+    ok: true,
+    range: {
+      label: range.label,
+      start: range.start.toISOString(),
+      end: range.end.toISOString()
+    },
+    repoInfo: null,
+    mergedPulls: mergedPulls.slice(0, 12),
+    commits: commits.slice(0, 16),
+    commitCount: commits.reduce((sum, commit) => sum + Number(commit.commitCount || 1), 0),
+    closedIssues: issues.filter(item => item.action === "closed").slice(0, 12),
+    openedIssues: issues.filter(item => item.action === "opened").slice(0, 12),
+    createdRepositories: [],
+    repositories: [...new Set(allItems.map(item => item.repo))].sort().slice(0, 12),
+    eventCount: allItems.length,
+    source: {
+      contributionGraph: true,
+      publicEvents: 0,
+      ownedRepoCommits: 0
+    }
+  };
+}
+
+async function fetchGitHubPersonalActivity(username, input = {}) {
+  const range = resolveDateRange(input);
+  const cleanUsername = String(username || "").trim();
+  if (!cleanUsername || /\s/.test(cleanUsername)) {
+    throw new Error("Enter a GitHub username for personal reports.");
+  }
+
+  if (GITHUB_TOKEN) {
+    try {
+      const contributionActivity = await fetchGitHubContributionActivity(cleanUsername, input);
+      if (contributionActivity.eventCount || contributionActivity.commitCount) return contributionActivity;
+    } catch {
+      // Fall back to public REST endpoints below.
+    }
+  }
+
+  const events = await fetchGitHubUserEventPages(cleanUsername, 3);
+  const eventItems = events
+    .filter(event => inRange(event.created_at, range))
+    .flatMap(simplifyPersonalEvent);
+  const ownedRepoCommits = await fetchOwnedRepoCommitsForUser(cleanUsername, range).catch(() => []);
+  const commitIds = new Set();
+  const dedupedCommits = [...eventItems.filter(item => item.type === "commit"), ...ownedRepoCommits]
+    .filter(commit => {
+      const key = `${commit.repo}:${commit.sha}`;
+      if (commitIds.has(key)) return false;
+      commitIds.add(key);
+      return true;
+    });
+  const items = [
+    ...eventItems.filter(item => item.type !== "commit"),
+    ...dedupedCommits
+  ].sort((a, b) => new Date(b.createdAt || b.committedAt || 0) - new Date(a.createdAt || a.committedAt || 0));
+
+  return {
+    repo: `@${cleanUsername}`,
+    scope: "personal",
+    username: cleanUsername,
+    ok: true,
+    range: {
+      label: range.label,
+      start: range.start.toISOString(),
+      end: range.end.toISOString()
+    },
+    repoInfo: null,
+    mergedPulls: items.filter(item => item.type === "merged_pr").slice(0, 12),
+    commits: items.filter(item => item.type === "commit").slice(0, 16),
+    commitCount: items.filter(item => item.type === "commit").length,
+    closedIssues: items.filter(item => item.type === "issue" && item.action === "closed").slice(0, 12),
+    openedIssues: items.filter(item => item.type === "issue" && item.action === "opened").slice(0, 12),
+    createdRepositories: items.filter(item => item.type === "repository").slice(0, 8),
+    repositories: [...new Set(items.map(item => item.repo))].sort().slice(0, 12),
+    eventCount: items.length,
+    source: {
+      contributionGraph: false,
+      publicEvents: events.length,
+      ownedRepoCommits: ownedRepoCommits.length
+    }
+  };
+}
+
 function compactList(items, formatter, emptyText) {
   if (!items?.length) return [`- ${emptyText}`];
   return items.slice(0, 6).map(formatter);
@@ -1118,6 +1445,9 @@ function compactList(items, formatter, emptyText) {
 
 function createWeeklyReportArtifacts(workflow, input = {}) {
   const repo = input.repo || workflow.inputs?.repo || "owner/repo";
+  const reportScope = input.reportScope || workflow.inputs?.reportScope || "repo";
+  const githubUser = String(input.githubUser || workflow.inputs?.githubUser || "").trim();
+  const reportSubject = reportScope === "personal" ? `@${githubUser || "github-user"}` : repo;
   const channel = input.slackChannel || workflow.inputs?.slackChannel || "#weekly-report";
   const audience = input.audience || workflow.inputs?.audience || "team";
   const destination = input.channel || workflow.inputs?.channel || "Slack";
@@ -1130,11 +1460,13 @@ function createWeeklyReportArtifacts(workflow, input = {}) {
 
   if (!activity?.ok) {
     return {
-      prSummary: `Weekly report draft for ${repo}: waiting for GitHub activity collection.`,
-      slackMessage: `Weekly report for ${repo} is ready to draft once GitHub activity is available.`,
+      prSummary: `Weekly report draft for ${reportSubject}: waiting for GitHub activity collection.`,
+      slackMessage: `Weekly report for ${reportSubject} is ready to draft once GitHub activity is available.`,
       failure: null,
       weeklyReport: {
-        repo,
+        repo: reportSubject,
+        reportScope,
+        githubUser,
         audience,
         destination,
         channel,
@@ -1147,12 +1479,20 @@ function createWeeklyReportArtifacts(workflow, input = {}) {
     };
   }
 
+  const commitCount = Number(activity.commitCount ?? activity.commits.length);
   const completed = [
-    ...compactList(activity.mergedPulls, pr => `- Merged #${pr.number}: ${pr.title} (${pr.author})`, "No merged PRs found in this range."),
-    ...compactList(activity.closedIssues, issue => `- Closed #${issue.number}: ${issue.title}`, "No closed issues found in this range.")
+    ...compactList(activity.mergedPulls, pr => `- Merged ${pr.repo ? `${pr.repo} ` : ""}#${pr.number}: ${pr.title} (${pr.author})`, "No merged PRs found in this range."),
+    ...compactList(activity.closedIssues, issue => `- Closed ${issue.repo ? `${issue.repo} ` : ""}#${issue.number}: ${issue.title}`, "No closed issues found in this range."),
+    ...(reportScope === "personal" ? compactList(activity.createdRepositories, item => `- Created ${item.repo}`, "No created repositories found in this range.") : [])
   ];
-  const inProgress = compactList(activity.commits, commit => `- ${commit.sha}: ${commit.title} (${commit.author})`, "No commits found in this range.");
-  const newWork = compactList(activity.openedIssues, issue => `- Opened #${issue.number}: ${issue.title}`, "No newly opened issues found in this range.");
+  const inProgress = compactList(activity.commits, commit => `- ${commit.repo ? `${commit.repo} ` : ""}${commit.sha}: ${commit.title} (${commit.author})`, "No commits found in this range.");
+  const newWork = compactList(activity.openedIssues, issue => `- Opened ${issue.repo ? `${issue.repo} ` : ""}#${issue.number}: ${issue.title}`, "No newly opened issues found in this range.");
+  const repoCoverage = activity.repositories?.length
+    ? ["", "Repositories covered", ...activity.repositories.map(item => `- ${item}`)]
+    : [];
+  const personalVisibilityNote = reportScope === "personal" && !activity.eventCount
+    ? ["- No public GitHub activity was found for this range. Private commits or very recent activity may not appear in GitHub's public events feed."]
+    : [];
   const blockers = blockerNotes
     ? blockerNotes.split("\n").filter(Boolean).map(line => `- ${line}`)
     : ["- None reported."];
@@ -1167,11 +1507,14 @@ function createWeeklyReportArtifacts(workflow, input = {}) {
     : [];
 
   const reportText = [
-    `Weekly report for ${repo} (${range})`,
+    `Weekly report for ${reportSubject} (${range})`,
     `Audience: ${audience}`,
     "",
     "Summary",
-    `- ${activity.mergedPulls.length} merged PRs, ${activity.commits.length} commits, ${activity.closedIssues.length} closed issues, ${activity.openedIssues.length} opened issues.`,
+    `- ${activity.mergedPulls.length} merged PRs, ${commitCount} commits, ${activity.closedIssues.length} closed issues, ${activity.openedIssues.length} opened issues.`,
+    ...(reportScope === "personal" ? [`- ${activity.repositories?.length || 0} repositories with public activity.`] : []),
+    ...personalVisibilityNote,
+    ...repoCoverage,
     "",
     "Completed this week",
     ...completed,
@@ -1192,13 +1535,15 @@ function createWeeklyReportArtifacts(workflow, input = {}) {
   ].join("\n");
 
   return {
-    prSummary: `Weekly report for ${repo}: ${activity.mergedPulls.length} merged PRs, ${activity.commits.length} commits, ${activity.closedIssues.length} closed issues.`,
+    prSummary: `Weekly report for ${reportSubject}: ${activity.mergedPulls.length} merged PRs, ${commitCount} commits, ${activity.closedIssues.length} closed issues.`,
     slackMessage: destination.toLowerCase() === "slack"
       ? `Ready to send weekly report to ${channel}.`
       : "Ready to use as an email/update draft.",
     failure: null,
     weeklyReport: {
-      repo,
+      repo: reportSubject,
+      reportScope,
+      githubUser,
       audience,
       destination,
       channel,
@@ -1211,28 +1556,40 @@ function createWeeklyReportArtifacts(workflow, input = {}) {
 }
 
 async function enrichExecutionArtifacts(execution, workflow) {
+  if (isWeeklyReportWorkflow(workflow)) {
+    const reportScope = execution.input?.reportScope || workflow.inputs?.reportScope || "repo";
+    const repo = execution.input?.repo || repoFromWorkflow(workflow);
+    const githubUser = execution.input?.githubUser || workflow.inputs?.githubUser || "";
+
+    try {
+      execution.input.githubActivity = reportScope === "personal"
+        ? await fetchGitHubPersonalActivity(githubUser, execution.input)
+        : await fetchGitHubWeeklyActivity(repo, execution.input);
+      execution.artifacts = createExecutionArtifacts(workflow, execution.input);
+      execution.artifacts.github = execution.input.githubActivity.repoInfo || null;
+      return execution;
+    } catch (error) {
+      execution.input.githubActivity = {
+        repo: reportScope === "personal" ? `@${githubUser || "github-user"}` : repo,
+        scope: reportScope,
+        ok: false,
+        error: error.message
+      };
+      execution.artifacts = createExecutionArtifacts(workflow, execution.input);
+      execution.artifacts.github = { repo: execution.input.githubActivity.repo, ok: false, error: error.message };
+      return execution;
+    }
+  }
+
   const repo = execution.input?.repo || repoFromWorkflow(workflow);
   if (!repo) return execution;
 
   try {
-    if (isWeeklyReportWorkflow(workflow)) {
-      execution.input.githubActivity = await fetchGitHubWeeklyActivity(repo, execution.input);
-      execution.artifacts = createExecutionArtifacts(workflow, execution.input);
-      execution.artifacts.github = execution.input.githubActivity.repoInfo || null;
-      return execution;
-    }
-
     execution.artifacts.github = await fetchGitHubRepo(repo);
     if (execution.artifacts.github?.ok) {
       execution.artifacts.prSummary = `PR draft package for ${repo}: replay workflow changes against ${execution.artifacts.github.defaultBranch}, then request checkpoint approval before publishing.`;
     }
   } catch (error) {
-    if (isWeeklyReportWorkflow(workflow)) {
-      execution.input.githubActivity = { repo, ok: false, error: error.message };
-      execution.artifacts = createExecutionArtifacts(workflow, execution.input);
-      execution.artifacts.github = { repo, ok: false, error: error.message };
-      return execution;
-    }
     execution.artifacts.github = { repo, ok: false, error: error.message };
   }
 

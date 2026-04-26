@@ -156,6 +156,8 @@ The UI shows the Planner Agent mode:
 
 FlowGuard can enrich workflow runs with real GitHub repository context when a workflow includes a repo such as `owner/name` or a recorder trace includes GitHub URLs. The Weekly Report Guardrail also pulls this week's merged PRs, commits, closed issues, and opened issues to draft a status report before the send checkpoint.
 
+Weekly reports can be scoped to one repository or to a GitHub user's activity across repositories they create or contribute to. When `GITHUB_TOKEN` is configured, personal reports use GitHub's contribution graph; otherwise they fall back to public user events and recently pushed owned repositories.
+
 Optional:
 
 ```bash
