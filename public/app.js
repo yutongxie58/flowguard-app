@@ -16,6 +16,15 @@ const state = {
 
 const app = document.querySelector("#app");
 
+document.addEventListener("click", event => {
+  const button = event.target.closest("button");
+  if (!button || button.disabled) return;
+  button.classList.remove("is-clicked");
+  void button.offsetWidth;
+  button.classList.add("is-clicked");
+  window.setTimeout(() => button.classList.remove("is-clicked"), 180);
+}, true);
+
 const icons = {
   run: "▶",
   approve: "✓",
@@ -117,7 +126,7 @@ function render() {
         </div>
         <div class="topbar-right">
           <div class="top-actions">
-            <button class="button secondary" data-action="refresh">Sync recorder</button>
+            <button class="button secondary" data-action="refresh">Refresh data</button>
             <button class="button secondary" data-action="toggle-manage">${state.manageOpen ? "Close manager" : "Manage workflow"}</button>
             <button class="button secondary" data-action="toggle-teach">${state.teachOpen ? "Close recorder" : "Teach workflow"}</button>
             <button class="button" data-action="run">${icons.run} Run Workflow</button>
@@ -902,6 +911,7 @@ async function refreshWorkflows() {
     ? previousId
     : state.workflows[0]?.id;
   state.execution = null;
+  state.runHistory = {};
   await loadRunHistory(state.selectedWorkflowId);
   render();
 }

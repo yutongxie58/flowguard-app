@@ -15,6 +15,15 @@ function sendMessage(message) {
   return chrome.runtime.sendMessage(message);
 }
 
+document.addEventListener("click", event => {
+  const button = event.target.closest("button");
+  if (!button || button.disabled) return;
+  button.classList.remove("is-clicked");
+  void button.offsetWidth;
+  button.classList.add("is-clicked");
+  window.setTimeout(() => button.classList.remove("is-clicked"), 180);
+}, true);
+
 function render(state) {
   statusEl.textContent = state.recording ? "Recording browser workflow" : "Idle";
   countEl.textContent = state.events?.length || 0;
