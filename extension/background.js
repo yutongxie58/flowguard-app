@@ -3,6 +3,7 @@ const DEFAULT_STATE = {
   traceId: null,
   name: "Recorded Browser Workflow",
   goal: "Replay this captured browser workflow with safety checkpoints.",
+  session: null,
   events: []
 };
 
@@ -35,6 +36,24 @@ function normalizeEvent(event) {
   };
 }
 
+function sessionHeaders(session) {
+  const headers = { "Content-Type": "application/json" };
+  if (session?.workspace?.id) headers["X-Workspace-Id"] = session.workspace.id;
+  if (session?.user?.email) headers["X-User-Email"] = session.user.email;
+  return headers;
+}
+
+async function refreshStoredSession() {
+  try {
+    const response = await fetch("http://localhost:5173/api/recorder/session");
+    const result = await response.json();
+    if (result.session?.workspace?.id) return setState({ session: result.session });
+  } catch {
+    // FlowGuard may not be running yet. Keep the last known extension state.
+  }
+  return getState();
+}
+
 async function appendEvent(event) {
   const state = await getState();
   if (!state.recording) return state;
@@ -65,12 +84,19 @@ async function broadcastRecordingState(recording) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "GET_STATE") {
-      sendResponse(await getState());
+      sendResponse(await refreshStoredSession());
+      return;
+    }
+
+    if (message.type === "REFRESH_FLOWGUARD_SESSION") {
+      sendResponse(await refreshStoredSession());
       return;
     }
 
     if (message.type === "START_RECORDING") {
+      const currentState = await refreshStoredSession();
       const state = await setState({
+        session: currentState.session,
         recording: true,
         traceId: createTraceId(),
         name: message.name || DEFAULT_STATE.name,
@@ -96,6 +122,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
+    if (message.type === "SET_FLOWGUARD_SESSION") {
+      const session = message.session?.workspace?.id ? message.session : null;
+      sendResponse(await setState({ session }));
+      return;
+    }
+
     if (message.type === "TRACE_EVENT") {
       sendResponse(await appendEvent(message.event));
       return;
@@ -112,14 +144,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === "SEND_TO_FLOWGUARD") {
-      const state = await getState();
+      const state = await refreshStoredSession();
       const response = await fetch("http://localhost:5173/api/traces", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: sessionHeaders(state.session),
         body: JSON.stringify({
           id: state.traceId || createTraceId(),
           name: state.name,
           goal: state.goal,
+          workspaceId: state.session?.workspace?.id || null,
+          createdBy: state.session?.user?.email || null,
+          useLlm: false,
           createdAt: new Date().toISOString(),
           events: state.events
         })

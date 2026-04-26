@@ -1,5 +1,6 @@
 const statusEl = document.querySelector("#status");
 const countEl = document.querySelector("#event-count");
+const workspaceNameEl = document.querySelector("#workspace-name");
 const nameEl = document.querySelector("#name");
 const goalEl = document.querySelector("#goal");
 const noteEl = document.querySelector("#note");
@@ -16,6 +17,7 @@ function sendMessage(message) {
 function render(state) {
   statusEl.textContent = state.recording ? "Recording browser workflow" : "Idle";
   countEl.textContent = state.events?.length || 0;
+  workspaceNameEl.textContent = state.session?.workspace?.name || "Open FlowGuard to sync";
   nameEl.value = state.name || nameEl.value;
   goalEl.value = state.goal || goalEl.value;
   startButton.disabled = state.recording;
@@ -24,10 +26,16 @@ function render(state) {
 }
 
 async function refresh() {
-  render(await sendMessage({ type: "GET_STATE" }));
+  statusEl.textContent = "Syncing FlowGuard workspace...";
+  const state = await sendMessage({ type: "GET_STATE" });
+  render(state);
+  if (!state.session?.workspace?.id) {
+    statusEl.textContent = "Open FlowGuard, sign in, then reopen this popup";
+  }
 }
 
 startButton.addEventListener("click", async () => {
+  statusEl.textContent = "Syncing FlowGuard workspace...";
   const state = await sendMessage({
     type: "START_RECORDING",
     name: nameEl.value,

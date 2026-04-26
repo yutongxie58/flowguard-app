@@ -18,11 +18,13 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
 const ALLOW_DEMO_RESET = process.env.ALLOW_DEMO_RESET === "true";
 const HOST = process.env.HOST || "127.0.0.1";
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 8000);
 const COLLECTIONS = ["workflows", "executions", "traces", "users", "workspaces"];
 let mongoClient = null;
 let mongoDb = null;
 let storageMode = "json";
 let lastPlannerError = null;
+let recorderSession = null;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -358,6 +360,21 @@ function publicUser(user) {
   return safeUser;
 }
 
+function normalizeRecorderSession(session) {
+  if (!session?.workspace?.id) return null;
+  return {
+    user: {
+      email: String(session.user?.email || ""),
+      name: String(session.user?.name || "")
+    },
+    workspace: {
+      id: String(session.workspace.id),
+      name: String(session.workspace.name || session.workspace.id)
+    },
+    syncedAt: new Date().toISOString()
+  };
+}
+
 function readJsonDb() {
   ensureJsonDb();
   const db = JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
@@ -447,7 +464,7 @@ function sendJson(res, status, body) {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
+    "Access-Control-Allow-Headers": "Content-Type, X-Workspace-Id, X-User-Email"
   });
   res.end(JSON.stringify(body));
 }
@@ -853,8 +870,11 @@ async function enhanceWorkflowWithLlm(baseWorkflow, plannerInput, sourceLabel) {
   ].join("\n");
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${OPENAI_API_KEY}`
@@ -871,7 +891,7 @@ async function enhanceWorkflowWithLlm(baseWorkflow, plannerInput, sourceLabel) {
           }
         }
       })
-    });
+    }).finally(() => clearTimeout(timeout));
 
     const responseBody = await response.json();
     if (!response.ok) throw new Error(responseBody.error?.message || "OpenAI planner request failed");
@@ -881,7 +901,9 @@ async function enhanceWorkflowWithLlm(baseWorkflow, plannerInput, sourceLabel) {
     lastPlannerError = null;
     return workflowFromPlannedSteps(baseWorkflow, planned, sourceLabel);
   } catch (error) {
-    lastPlannerError = error.message;
+    lastPlannerError = error.name === "AbortError"
+      ? `OpenAI planner timed out after ${LLM_TIMEOUT_MS}ms`
+      : error.message;
     console.warn(`LLM planner fallback: ${error.message}`);
     return baseWorkflow;
   }
@@ -1430,12 +1452,22 @@ function createWorkflowFromTrace(trace) {
 }
 
 async function handleApi(req, res, pathname) {
-  const db = await readDb();
-  const workspaceId = getWorkspaceId(req);
-
   if (req.method === "OPTIONS") {
     return sendJson(res, 204, {});
   }
+
+  if (req.method === "GET" && pathname === "/api/recorder/session") {
+    return sendJson(res, 200, { session: recorderSession });
+  }
+
+  if (req.method === "POST" && pathname === "/api/recorder/session") {
+    const body = await readBody(req);
+    recorderSession = normalizeRecorderSession(body.session);
+    return sendJson(res, 200, { session: recorderSession });
+  }
+
+  const db = await readDb();
+  const workspaceId = getWorkspaceId(req);
 
   if (req.method === "POST" && pathname === "/api/auth/signup") {
     const body = await readBody(req);
@@ -1636,7 +1668,7 @@ async function handleApi(req, res, pathname) {
       events: Array.isArray(body.events) ? body.events.slice(0, 200) : []
     };
     const baseWorkflow = createWorkflowFromTrace(trace);
-    const workflow = await enhanceWorkflowWithLlm(baseWorkflow, {
+    const workflow = body.useLlm === false ? baseWorkflow : await enhanceWorkflowWithLlm(baseWorkflow, {
       source: "browser_recorder_trace",
       name: trace.name,
       goal: trace.goal,

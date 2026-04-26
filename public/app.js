@@ -41,6 +41,14 @@ async function api(path, options = {}) {
   return response.json();
 }
 
+function syncRecorderSession() {
+  fetch("/api/recorder/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session: state.session })
+  }).catch(() => {});
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -696,6 +704,7 @@ async function signUp(form) {
   });
   state.session = session;
   localStorage.setItem("flowguardSession", JSON.stringify(session));
+  syncRecorderSession();
   await load();
 }
 
@@ -710,12 +719,14 @@ async function signIn(form) {
   });
   state.session = session;
   localStorage.setItem("flowguardSession", JSON.stringify(session));
+  syncRecorderSession();
   await load();
 }
 
 function signOut() {
   localStorage.removeItem("flowguardSession");
   state.session = null;
+  syncRecorderSession();
   state.workflows = [];
   state.memory = null;
   state.execution = null;
@@ -941,6 +952,8 @@ app.addEventListener("submit", event => {
     updateWorkflow(manageForm).catch(error => alert(error.message));
   }
 });
+
+syncRecorderSession();
 
 load().catch(error => {
   app.innerHTML = `<main class="main"><div class="surface empty">Failed to load FlowGuard: ${escapeHtml(error.message)}</div></main>`;
