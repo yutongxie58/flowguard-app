@@ -151,6 +151,17 @@ button {
   font: inherit;
   font-weight: 800;
   cursor: pointer;
+  transition: filter 140ms ease, transform 140ms ease;
+}
+
+button:active,
+button.is-clicked {
+  filter: brightness(0.84);
+  transform: translateY(1px);
+}
+
+button:disabled {
+  cursor: not-allowed;
 }
 
 button.secondary {

@@ -2,6 +2,7 @@ const state = {
   workflows: [],
   memory: null,
   health: null,
+  runHistory: {},
   session: JSON.parse(localStorage.getItem("flowguardSession") || "null"),
   authMode: "signin",
   selectedWorkflowId: new URLSearchParams(window.location.search).get("workflow") || "design-to-pr",
@@ -14,6 +15,15 @@ const state = {
 };
 
 const app = document.querySelector("#app");
+
+document.addEventListener("click", event => {
+  const button = event.target.closest("button");
+  if (!button || button.disabled) return;
+  button.classList.remove("is-clicked");
+  void button.offsetWidth;
+  button.classList.add("is-clicked");
+  window.setTimeout(() => button.classList.remove("is-clicked"), 180);
+}, true);
 
 const icons = {
   run: "▶",
@@ -116,7 +126,7 @@ function render() {
         </div>
         <div class="topbar-right">
           <div class="top-actions">
-            <button class="button secondary" data-action="refresh">Sync recorder</button>
+            <button class="button secondary" data-action="refresh">Refresh data</button>
             <button class="button secondary" data-action="toggle-manage">${state.manageOpen ? "Close manager" : "Manage workflow"}</button>
             <button class="button secondary" data-action="toggle-teach">${state.teachOpen ? "Close recorder" : "Teach workflow"}</button>
             <button class="button" data-action="run">${icons.run} Run Workflow</button>
@@ -219,6 +229,7 @@ function render() {
               <div class="timeline" style="margin-top: 12px;">
                 ${renderTimeline(workflow)}
               </div>
+              ${renderRunHistory(workflow)}
             </div>
           </section>
 
@@ -439,9 +450,20 @@ function renderMemoryPanel() {
         <div><strong>${memory.executions}</strong><span>runs</span></div>
         <div><strong>${memory.decisions}</strong><span>decisions</span></div>
       </div>
+      ${memory.recentLearnedRules?.length ? `
+        <div class="learned-rules">
+          <strong>Learned rejection memory</strong>
+          ${memory.recentLearnedRules.map(rule => `
+            <div class="learned-rule">
+              <span>${escapeHtml(rule.workflowName || "Workflow")}</span>
+              <p>${escapeHtml(rule.rule)}</p>
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
       <div class="memory-foot">
         <span>${escapeHtml(memory.database)}</span>
-        <span>${escapeHtml(lastDecision)}</span>
+        <span>${memory.learnedRules ? `${memory.learnedRules} learned rules` : escapeHtml(lastDecision)}</span>
       </div>
       ${state.health?.allowDemoReset ? `<button class="button secondary reset-button" data-action="reset-demo">Reset demo data</button>` : ""}
     </div>
@@ -539,6 +561,41 @@ function renderTimeline(workflow) {
   `).join("");
 }
 
+function renderRunHistory(workflow) {
+  if (!workflow) return "";
+  const history = state.runHistory[workflow.id] || [];
+  return `
+    <section class="run-history">
+      <div class="history-top">
+        <h3 class="card-title">Run history</h3>
+        <span class="pill">${history.length ? `${history.length} recent` : "none yet"}</span>
+      </div>
+      ${history.length ? `
+        <div class="history-list">
+          ${history.map(run => {
+            const approved = (run.decisions || []).filter(decision => decision.decision === "approved").length;
+            const rejected = (run.decisions || []).filter(decision => decision.decision === "rejected").length;
+            return `
+              <article class="history-item">
+                <div>
+                  <strong>${escapeHtml(run.status.replaceAll("_", " "))}</strong>
+                  <p>${escapeHtml(run.summary)}</p>
+                  <div class="timeline-meta">
+                    <span class="pill">${formatDate(run.startedAt)}</span>
+                    <span class="pill ${rejected ? "high" : approved ? "low" : "medium"}">${approved} approved / ${rejected} rejected</span>
+                    ${run.confidence ? `<span class="pill low">${Number(run.confidence)}% confidence</span>` : ""}
+                    ${run.learnedRules ? `<span class="pill medium">${run.learnedRules} learned rules</span>` : ""}
+                  </div>
+                </div>
+              </article>
+            `;
+          }).join("")}
+        </div>
+      ` : `<div class="empty">Run this workflow to build MongoDB-backed execution history.</div>`}
+    </section>
+  `;
+}
+
 function renderCheckpointPanel(workflow, checkpoint) {
   if (!workflow) return `<div class="empty">No workflow selected.</div>`;
   const runInstruction = state.execution?.input?.runInstruction;
@@ -552,6 +609,8 @@ function renderCheckpointPanel(workflow, checkpoint) {
         <p><b>Why:</b> ${escapeHtml(failure.why)}</p>
         <p><b>How to fix:</b> ${escapeHtml(failure.fix)}</p>
       </div>
+      ${renderConnectedSourcesArtifact(state.execution)}
+      ${renderVerificationArtifact(state.execution)}
       <button class="button" style="margin-top: 12px; width: 100%; justify-content: center;" data-action="run">${icons.run} Rerun Agent</button>
     `;
   }
@@ -570,6 +629,8 @@ function renderCheckpointPanel(workflow, checkpoint) {
 
   if (state.execution.status === "complete") {
     return `
+      ${renderConnectedSourcesArtifact(state.execution)}
+      ${renderVerificationArtifact(state.execution)}
       ${renderGitHubArtifact(state.execution)}
       ${renderWeeklyReportArtifact(state.execution)}
       ${renderExecutionPackage(state.execution)}
@@ -612,12 +673,88 @@ function renderCheckpointPanel(workflow, checkpoint) {
         <button class="button ghost wide" data-action="why">${icons.why} Ask agent why</button>
       </div>
     </div>
+    ${renderConnectedSourcesArtifact(state.execution)}
+    ${renderVerificationArtifact(state.execution)}
     ${renderGitHubArtifact(state.execution)}
     ${renderWeeklyReportArtifact(state.execution)}
     ${renderExecutionPackage(state.execution)}
     <div class="artifact">
       <strong>Persistent memory</strong>
       <p>This run saves workflow spec, execution logs, and approve/reject decisions through the backend API.</p>
+    </div>
+  `;
+}
+
+function renderConnectedSourcesArtifact(execution) {
+  const sources = execution?.artifacts?.connectedSources;
+  if (!sources?.length) return "";
+
+  const statusClass = status => {
+    const lower = String(status || "").toLowerCase();
+    if (lower.includes("connected") || lower.includes("active") || lower.includes("captured") || lower.includes("scoped")) return "low";
+    if (lower.includes("approval") || lower.includes("check") || lower.includes("taught") || lower.includes("demo")) return "medium";
+    return "high";
+  };
+
+  return `
+    <div class="artifact connected-sources-artifact">
+      <strong>Connected data sources</strong>
+      <p>Team systems feeding this guarded run before FlowGuard asks for approval.</p>
+      <div class="source-grid">
+        ${sources.map(source => `
+          <article class="source-card">
+            <div class="source-top">
+              <span>${escapeHtml(source.name)}</span>
+              <span class="pill ${statusClass(source.status)}">${escapeHtml(source.status)}</span>
+            </div>
+            <p>${escapeHtml(source.detail)}</p>
+          </article>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderVerificationArtifact(execution) {
+  const verification = execution?.artifacts?.verification;
+  if (!verification) return "";
+
+  const confidence = Number(verification.confidence || 0);
+  const confidenceClass = confidence >= 80 ? "low" : confidence >= 65 ? "medium" : "high";
+  const list = (items = []) => items.map(item => `<li>${escapeHtml(item)}</li>`).join("");
+
+  return `
+    <div class="artifact verification-artifact">
+      <div class="verification-top">
+        <div>
+          <strong>Verification scorecard</strong>
+          <p>What FlowGuard verified before asking the agent or human to continue.</p>
+        </div>
+        <span class="pill ${confidenceClass}">${confidence}% confidence</span>
+      </div>
+      <div class="verification-metrics">
+        <div><strong>${Number(verification.riskyActions || 0)}</strong><span>risky actions</span></div>
+        <div><strong>${Number(verification.highRiskActions || 0)}</strong><span>high risk</span></div>
+        <div><strong>${(verification.plannedChecks || []).length}</strong><span>planned checks</span></div>
+      </div>
+      <div class="verification-grid">
+        <section>
+          <h4>Verified</h4>
+          <ul>${list(verification.verified)}</ul>
+        </section>
+        <section>
+          <h4>Assumed</h4>
+          <ul>${list(verification.assumed)}</ul>
+        </section>
+        <section>
+          <h4>Missing Context</h4>
+          <ul>${list(verification.missingContext)}</ul>
+        </section>
+        <section>
+          <h4>Planned Checks</h4>
+          <ul>${list(verification.plannedChecks)}</ul>
+        </section>
+      </div>
     </div>
   `;
 }
@@ -708,7 +845,13 @@ async function load() {
   if (!state.workflows.some(workflow => workflow.id === state.selectedWorkflowId)) {
     state.selectedWorkflowId = state.workflows[0]?.id;
   }
+  await loadRunHistory(state.selectedWorkflowId);
   render();
+}
+
+async function loadRunHistory(workflowId) {
+  if (!workflowId || state.runHistory[workflowId]) return;
+  state.runHistory[workflowId] = await api(`/api/workflows/${workflowId}/runs`);
 }
 
 async function signUp(form) {
@@ -750,6 +893,7 @@ async function signOut() {
   state.workflows = [];
   state.memory = null;
   state.execution = null;
+  state.runHistory = {};
   render();
 }
 
@@ -767,6 +911,8 @@ async function refreshWorkflows() {
     ? previousId
     : state.workflows[0]?.id;
   state.execution = null;
+  state.runHistory = {};
+  await loadRunHistory(state.selectedWorkflowId);
   render();
 }
 
@@ -789,6 +935,8 @@ async function runWorkflow() {
     body: JSON.stringify({ input: { ...workflow.inputs, ...weeklyInput, runInstruction } })
   });
   state.memory = await api("/api/memory");
+  delete state.runHistory[workflow.id];
+  await loadRunHistory(workflow.id);
   state.runRequest = "";
   state.instructionDraft = "";
   render();
@@ -802,6 +950,8 @@ async function decide(checkpointId, decision) {
     body: JSON.stringify({ checkpointId, decision, instruction })
   });
   state.memory = await api("/api/memory");
+  delete state.runHistory[state.execution.workflowId];
+  await loadRunHistory(state.execution.workflowId);
   state.instructionDraft = "";
   render();
 }
@@ -826,6 +976,7 @@ async function teachWorkflow(form) {
   state.memory = await api("/api/memory");
   state.selectedWorkflowId = workflow.id;
   state.execution = null;
+  await loadRunHistory(workflow.id);
   state.teachOpen = false;
   render();
 }
@@ -852,6 +1003,8 @@ async function updateWorkflow(form) {
   state.memory = await api("/api/memory");
   state.selectedWorkflowId = updated.id;
   state.execution = null;
+  delete state.runHistory[updated.id];
+  await loadRunHistory(updated.id);
   render();
 }
 
@@ -864,6 +1017,7 @@ async function deleteWorkflow() {
 
   await api(`/api/workflows/${workflow.id}`, { method: "DELETE" });
   state.workflows = state.workflows.filter(item => item.id !== workflow.id);
+  delete state.runHistory[workflow.id];
   state.memory = await api("/api/memory");
   state.selectedWorkflowId = state.workflows[0]?.id;
   state.execution = null;
@@ -932,7 +1086,9 @@ app.addEventListener("click", event => {
     state.selectedWorkflowId = target.dataset.id;
     state.runRequest = "";
     state.execution = null;
-    render();
+    loadRunHistory(state.selectedWorkflowId)
+      .then(() => render())
+      .catch(error => alert(error.message));
   }
   if (action === "run") {
     runWorkflow().catch(error => alert(error.message));

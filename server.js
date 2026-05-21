@@ -557,6 +557,138 @@ function buildGenericPatchPreview(workflow, input) {
   return replayLines;
 }
 
+function createVerificationScorecard(workflow, input = {}, artifacts = {}) {
+  const checkpoints = workflow.checkpoints || [];
+  const riskyActions = checkpoints.filter(checkpoint => ["medium", "high"].includes(checkpoint.risk));
+  const highRiskActions = checkpoints.filter(checkpoint => checkpoint.risk === "high");
+  const learnedRules = Array.isArray(input.learnedRules) ? input.learnedRules : [];
+  const executionPackage = artifacts.executionPackage;
+  const weeklyReport = artifacts.weeklyReport;
+  const github = artifacts.github;
+  const repo = input.repo || workflow.inputs?.repo || repoFromWorkflow(workflow);
+  const slackChannel = input.slackChannel || workflow.inputs?.slackChannel || weeklyReport?.channel || "#design-eng";
+  const isRecorderTrace = workflow.template?.toLowerCase().includes("browser recorder") || workflow.inputs?.source?.includes("Recorder");
+  const hasGitHubActivity = Boolean(input.githubActivity?.ok || weeklyReport?.activity?.ok);
+  const hasGitHubRepo = Boolean(github?.ok || hasGitHubActivity);
+  const plannedChecks = [];
+
+  if (executionPackage?.testCommand) plannedChecks.push(executionPackage.testCommand);
+  if (weeklyReport) plannedChecks.push("Validate GitHub activity counts before sending the weekly report.");
+  learnedRules.slice(0, 2).forEach(rule => plannedChecks.push(`Apply learned rule: ${rule.rule}`));
+  if (repo) plannedChecks.push(`Confirm GitHub context for ${repo}.`);
+  if (slackChannel) plannedChecks.push(`Pause before posting to Slack destination ${slackChannel}.`);
+  if (!plannedChecks.length) plannedChecks.push("Replay recorded workflow steps and stop at approval checkpoints.");
+
+  const verified = [
+    `Workflow spec loaded with ${workflow.recordedSteps?.length || 0} recorded steps.`,
+    `${checkpoints.length} approval checkpoint${checkpoints.length === 1 ? "" : "s"} generated before guarded actions.`
+  ];
+  if (hasGitHubRepo) verified.push("GitHub context was fetched for this run.");
+  if (hasGitHubActivity) verified.push("GitHub activity was collected for report generation.");
+  if (weeklyReport?.reportText) verified.push("Weekly report draft was generated from connected activity.");
+  if (executionPackage?.changedFiles?.length) verified.push(`${executionPackage.changedFiles.length} target file${executionPackage.changedFiles.length === 1 ? "" : "s"} identified for the execution package.`);
+  if (isRecorderTrace) verified.push("Browser recorder trace was converted into replay steps.");
+  if (learnedRules.length) verified.push(`Applied ${learnedRules.length} learned safety rule${learnedRules.length === 1 ? "" : "s"} from prior rejection memory.`);
+
+  const assumed = [
+    "Planned checks are proposed by FlowGuard; external tests are not executed until the user runs them.",
+    "High-impact actions remain blocked until human approval."
+  ];
+  if (!hasGitHubRepo && repo) assumed.push(`Repository ${repo} is reachable and matches the workflow intent.`);
+  if (slackChannel) assumed.push(`Slack destination ${slackChannel} is the intended audience.`);
+
+  const missingContext = [];
+  if (!repo && !weeklyReport) missingContext.push("No GitHub repository or user activity source was provided.");
+  if (repo && !hasGitHubRepo) missingContext.push("Live GitHub metadata has not been verified yet.");
+  if (!input.runInstruction) missingContext.push("No extra run instruction was supplied.");
+  if (weeklyReport && !weeklyReport.ok) missingContext.push("Weekly report source activity was unavailable.");
+  if (!missingContext.length) missingContext.push("No blocking context gaps detected before the next checkpoint.");
+
+  const confidence = Math.max(45, Math.min(96,
+    64
+    + (hasGitHubRepo ? 10 : 0)
+    + (weeklyReport?.reportText || executionPackage?.patchPreview?.length ? 8 : 0)
+    + (checkpoints.length ? 8 : 0)
+    + (learnedRules.length ? 4 : 0)
+    + (input.runInstruction ? 4 : 0)
+    - (missingContext.length > 1 ? 8 : 0)
+    - highRiskActions.length * 2
+  ));
+
+  return {
+    confidence,
+    riskyActions: riskyActions.length,
+    highRiskActions: highRiskActions.length,
+    verified,
+    assumed,
+    missingContext,
+    plannedChecks: plannedChecks.slice(0, 5)
+  };
+}
+
+function createConnectedSources(workflow, input = {}, artifacts = {}) {
+  const weeklyReport = artifacts.weeklyReport;
+  const github = artifacts.github;
+  const learnedRules = Array.isArray(input.learnedRules) ? input.learnedRules : [];
+  const repo = input.repo || workflow.inputs?.repo || repoFromWorkflow(workflow);
+  const slackChannel = input.slackChannel || workflow.inputs?.slackChannel || weeklyReport?.channel || "#design-eng";
+  const isRecorderTrace = workflow.template?.toLowerCase().includes("browser recorder") || workflow.inputs?.source?.includes("Recorder");
+  const githubLabel = weeklyReport?.reportScope === "personal"
+    ? `GitHub user ${weeklyReport.repo}`
+    : repo ? `GitHub repo ${repo}` : "No GitHub source selected";
+  const githubStatus = input.githubActivity?.ok || weeklyReport?.activity?.ok || github?.ok
+    ? "connected"
+    : repo || weeklyReport ? "needs check" : "not used";
+  const slackStatus = slackChannel ? "approval gated" : "not configured";
+  const recorderStatus = isRecorderTrace ? "browser trace captured" : "taught workflow";
+  const mongoStatus = workflow.workspaceId ? "workspace scoped" : "demo/global memory";
+  const checkpointCount = workflow.checkpoints?.length || 0;
+  const highRiskCount = workflow.checkpoints?.filter(checkpoint => checkpoint.risk === "high").length || 0;
+
+  return [
+    {
+      id: "github",
+      name: "GitHub",
+      status: githubStatus,
+      detail: githubLabel
+    },
+    {
+      id: "slack",
+      name: "Slack",
+      status: slackStatus,
+      detail: slackChannel ? `Destination ${slackChannel}; send waits for approval.` : "No Slack destination selected."
+    },
+    {
+      id: "recorder",
+      name: "Recorder",
+      status: recorderStatus,
+      detail: `${workflow.recordedSteps?.length || 0} workflow steps feed the replay plan.`
+    },
+    {
+      id: "mongodb",
+      name: "MongoDB memory",
+      status: learnedRules.length ? "learned rules active" : mongoStatus,
+      detail: learnedRules.length
+        ? `${learnedRules.length} prior rejection rule${learnedRules.length === 1 ? "" : "s"} loaded for this run.`
+        : "Workflow, execution timeline, artifacts, and decisions persist after each run."
+    },
+    {
+      id: "checkpoints",
+      name: "Human checkpoints",
+      status: checkpointCount ? "active" : "none",
+      detail: `${checkpointCount} approval gate${checkpointCount === 1 ? "" : "s"}, ${highRiskCount} high-risk pause${highRiskCount === 1 ? "" : "s"}.`
+    }
+  ];
+}
+
+function withVerification(workflow, input, artifacts) {
+  return {
+    ...artifacts,
+    connectedSources: createConnectedSources(workflow, input, artifacts),
+    verification: createVerificationScorecard(workflow, input, artifacts)
+  };
+}
+
 function createExecutionArtifacts(workflow, input = {}) {
   const repo = input.repo || workflow.inputs?.repo || "flowguard-demo/design-system";
   const component = input.targetComponent || workflow.inputs?.targetComponent || "Button.tsx";
@@ -569,11 +701,12 @@ function createExecutionArtifacts(workflow, input = {}) {
   const branchName = `flowguard/${component.replace(/\.[^.]+$/, "").toLowerCase()}-design-update`;
 
   if (isWeeklyReportWorkflow(workflow)) {
-    return createWeeklyReportArtifacts(workflow, input);
+    const artifacts = createWeeklyReportArtifacts(workflow, input);
+    return withVerification(workflow, input, artifacts);
   }
 
   if (workflow.baseTemplateId === "design-to-pr" || workflow.id === "design-to-pr" || workflow.template?.toLowerCase().includes("design")) {
-    return {
+    const artifacts = {
       prSummary: `PR draft package for ${repo}: ${effectiveInstruction} Draft updates target ${component}, include compact/loading coverage, and wait for approval before publishing.`,
       slackMessage: `Design-to-PR update ready for review: ${effectiveInstruction} ${component} changes are packaged with tests and a preview. Waiting on FlowGuard approval before posting to ${channel}.`,
       failure: null,
@@ -607,9 +740,10 @@ function createExecutionArtifacts(workflow, input = {}) {
         ].join("\n")
       }
     };
+    return withVerification(workflow, input, artifacts);
   }
 
-  return {
+  const artifacts = {
     prSummary: `Execution package for ${workflow.name}: ${effectiveInstruction}`,
     slackMessage: `FlowGuard prepared a guarded run for "${workflow.name}" using this request: ${effectiveInstruction}`,
     failure: null,
@@ -622,6 +756,7 @@ function createExecutionArtifacts(workflow, input = {}) {
       prBody: `## Goal\n${workflow.goal}\n\n## Run request\n${runInstruction}${editInstructions.length ? `\n\n## Checkpoint edits\n${editInstructions.map(item => `- ${item}`).join("\n")}` : ""}\n\n## Steps\n${workflow.recordedSteps.map(step => `- ${step.title}`).join("\n")}`
     }
   };
+  return withVerification(workflow, input, artifacts);
 }
 
 function createExecution(workflow, input = {}) {
@@ -1567,6 +1702,8 @@ async function enrichExecutionArtifacts(execution, workflow) {
         : await fetchGitHubWeeklyActivity(repo, execution.input);
       execution.artifacts = createExecutionArtifacts(workflow, execution.input);
       execution.artifacts.github = execution.input.githubActivity.repoInfo || null;
+      execution.artifacts.connectedSources = createConnectedSources(workflow, execution.input, execution.artifacts);
+      execution.artifacts.verification = createVerificationScorecard(workflow, execution.input, execution.artifacts);
       return execution;
     } catch (error) {
       execution.input.githubActivity = {
@@ -1577,6 +1714,8 @@ async function enrichExecutionArtifacts(execution, workflow) {
       };
       execution.artifacts = createExecutionArtifacts(workflow, execution.input);
       execution.artifacts.github = { repo: execution.input.githubActivity.repo, ok: false, error: error.message };
+      execution.artifacts.connectedSources = createConnectedSources(workflow, execution.input, execution.artifacts);
+      execution.artifacts.verification = createVerificationScorecard(workflow, execution.input, execution.artifacts);
       return execution;
     }
   }
@@ -1589,8 +1728,12 @@ async function enrichExecutionArtifacts(execution, workflow) {
     if (execution.artifacts.github?.ok) {
       execution.artifacts.prSummary = `PR draft package for ${repo}: replay workflow changes against ${execution.artifacts.github.defaultBranch}, then request checkpoint approval before publishing.`;
     }
+    execution.artifacts.connectedSources = createConnectedSources(workflow, execution.input, execution.artifacts);
+    execution.artifacts.verification = createVerificationScorecard(workflow, execution.input, execution.artifacts);
   } catch (error) {
     execution.artifacts.github = { repo, ok: false, error: error.message };
+    execution.artifacts.connectedSources = createConnectedSources(workflow, execution.input, execution.artifacts);
+    execution.artifacts.verification = createVerificationScorecard(workflow, execution.input, execution.artifacts);
   }
 
   return execution;
@@ -1659,6 +1802,7 @@ function buildMemoryStats(db) {
       workflowId: execution.workflowId
     }))
   );
+  const learnedRules = extractLearnedRules(db);
   const sortedDecisions = decisions.sort((a, b) => new Date(b.decidedAt || 0) - new Date(a.decidedAt || 0));
   const sortedExecutions = [...db.executions].sort((a, b) => new Date(b.startedAt || 0) - new Date(a.startedAt || 0));
 
@@ -1672,9 +1816,50 @@ function buildMemoryStats(db) {
     decisions: decisions.length,
     approvals: decisions.filter(decision => decision.decision === "approved").length,
     rejections: decisions.filter(decision => decision.decision === "rejected").length,
+    learnedRules: learnedRules.length,
+    recentLearnedRules: learnedRules.slice(0, 3),
     lastDecision: sortedDecisions[0] || null,
     lastExecution: sortedExecutions[0] || null
   };
+}
+
+function createLearnedRule(workflow, checkpoint, decision) {
+  const instruction = String(decision.instruction || "").trim();
+  const title = checkpoint?.title || "guarded action";
+  const rule = instruction
+    ? `Before ${title}, ${instruction}`
+    : `Before ${title}, require a clearer human instruction.`;
+
+  return {
+    id: `rule-${crypto.randomUUID()}`,
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    checkpointId: decision.checkpointId,
+    checkpointTitle: title,
+    rule,
+    sourceInstruction: instruction,
+    learnedAt: decision.decidedAt
+  };
+}
+
+function extractLearnedRules(db, workflowId = null) {
+  return db.executions
+    .flatMap(execution => (execution.decisions || [])
+      .filter(decision => decision.decision === "rejected")
+      .map(decision => decision.learnedRule || {
+        id: `rule-${decision.id || crypto.randomUUID()}`,
+        workflowId: execution.workflowId,
+        workflowName: execution.workflowId,
+        checkpointId: decision.checkpointId,
+        checkpointTitle: decision.checkpointId,
+        rule: decision.instruction
+          ? `Before ${decision.checkpointId}, ${decision.instruction}`
+          : `Before ${decision.checkpointId}, require a clearer human instruction.`,
+        sourceInstruction: decision.instruction || "",
+        learnedAt: decision.decidedAt
+      }))
+    .filter(rule => !workflowId || rule.workflowId === workflowId)
+    .sort((a, b) => new Date(b.learnedAt || 0) - new Date(a.learnedAt || 0));
 }
 
 function memoryStatsForWorkspace(db, workspaceId) {
@@ -1684,6 +1869,29 @@ function memoryStatsForWorkspace(db, workspaceId) {
     traces: scopedItems(db.traces, workspaceId),
     executions: scopedItems(db.executions, workspaceId)
   });
+}
+
+function executionHistoryItem(execution) {
+  return {
+    id: execution.id,
+    workflowId: execution.workflowId,
+    startedAt: execution.startedAt,
+    status: execution.status,
+    currentCheckpointId: execution.currentCheckpointId,
+    decisions: (execution.decisions || []).map(decision => ({
+      checkpointId: decision.checkpointId,
+      decision: decision.decision,
+      instruction: decision.instruction || "",
+      decidedAt: decision.decidedAt
+    })),
+    summary: execution.artifacts?.weeklyReport?.prSummary
+      || execution.artifacts?.prSummary
+      || execution.artifacts?.weeklyReport?.reportText?.split("\n").find(Boolean)
+      || "FlowGuard run",
+    confidence: execution.artifacts?.verification?.confidence || null,
+    riskyActions: execution.artifacts?.verification?.riskyActions || 0,
+    learnedRules: execution.input?.learnedRules?.length || 0
+  };
 }
 
 function titleCase(value) {
@@ -1963,6 +2171,19 @@ async function handleApi(req, res, pathname) {
     return workflow ? sendJson(res, 200, workflow) : sendJson(res, 404, { error: "Workflow not found" });
   }
 
+  const workflowRunsMatch = pathname.match(/^\/api\/workflows\/([^/]+)\/runs$/);
+  if (req.method === "GET" && workflowRunsMatch) {
+    const workflow = scopedItems(db.workflows, workspaceId).find(item => item.id === workflowRunsMatch[1]);
+    if (!workflow) return sendJson(res, 404, { error: "Workflow not found" });
+
+    const runs = scopedItems(db.executions, workspaceId)
+      .filter(execution => execution.workflowId === workflow.id)
+      .sort((a, b) => new Date(b.startedAt || 0) - new Date(a.startedAt || 0))
+      .slice(0, 8)
+      .map(executionHistoryItem);
+    return sendJson(res, 200, runs);
+  }
+
   if (req.method === "POST" && pathname === "/api/workflows") {
     const body = await readBody(req);
     const baseWorkflow = createWorkflowFromTeach(body);
@@ -2046,7 +2267,12 @@ async function handleApi(req, res, pathname) {
     const workflow = scopedItems(db.workflows, workspaceId).find(item => item.id === runMatch[1]);
     if (!workflow) return sendJson(res, 404, { error: "Workflow not found" });
 
-    const execution = await enrichExecutionArtifacts(createExecution(workflow, body.input), workflow);
+    const learnedRules = extractLearnedRules({ ...db, executions: scopedItems(db.executions, workspaceId) }, workflow.id).slice(0, 3);
+    const executionInput = {
+      ...(body.input || {}),
+      learnedRules
+    };
+    const execution = await enrichExecutionArtifacts(createExecution(workflow, executionInput), workflow);
     execution.workspaceId = workspaceId || workflow.workspaceId || null;
     db.executions.unshift(execution);
     workflow.lastRun = execution.startedAt;
@@ -2069,22 +2295,35 @@ async function handleApi(req, res, pathname) {
     const workflow = db.workflows.find(item => item.id === execution.workflowId);
     if (!workflow) return sendJson(res, 404, { error: "Workflow not found" });
 
-    execution.decisions.push({
+    const decision = {
       id: crypto.randomUUID(),
       checkpointId: body.checkpointId,
       decision: body.decision,
       instruction: body.instruction || "",
       decidedAt: new Date().toISOString()
-    });
+    };
+
+    if (decision.decision === "rejected") {
+      const checkpoint = workflow.checkpoints.find(item => item.id === decision.checkpointId);
+      decision.learnedRule = createLearnedRule(workflow, checkpoint, decision);
+      execution.input.learnedRules ||= [];
+      execution.input.learnedRules.unshift(decision.learnedRule);
+      execution.input.learnedRules = execution.input.learnedRules.slice(0, 3);
+    }
+
+    execution.decisions.push(decision);
 
     if (body.instruction) {
       execution.input.editInstructions ||= [];
       execution.input.editInstructions.push(body.instruction);
+      const artifacts = createExecutionArtifacts(workflow, execution.input);
       execution.artifacts = {
-        ...createExecutionArtifacts(workflow, execution.input),
+        ...artifacts,
         github: execution.artifacts.github || null,
         failure: execution.artifacts.failure || null
       };
+      execution.artifacts.connectedSources = createConnectedSources(workflow, execution.input, execution.artifacts);
+      execution.artifacts.verification = createVerificationScorecard(workflow, execution.input, execution.artifacts);
     }
 
     if (body.decision === "rejected") {
@@ -2094,9 +2333,13 @@ async function handleApi(req, res, pathname) {
         why: "Human rejected the planned action because it needed a safer instruction.",
         fix: body.instruction || "Edit the plan, narrow the blast radius, then rerun this checkpoint."
       };
+      execution.artifacts.connectedSources = createConnectedSources(workflow, execution.input, execution.artifacts);
+      execution.artifacts.verification = createVerificationScorecard(workflow, execution.input, execution.artifacts);
     } else {
       advanceExecution(workflow, execution);
       await deliverWeeklyReportIfReady(execution, workflow);
+      execution.artifacts.connectedSources = createConnectedSources(workflow, execution.input, execution.artifacts);
+      execution.artifacts.verification = createVerificationScorecard(workflow, execution.input, execution.artifacts);
     }
 
     await writeDb(db);
@@ -2153,37 +2396,10 @@ const server = http.createServer(async (req, res) => {
 
 async function start() {
   await connectStorage();
-  const listenHosts = HOST === "0.0.0.0" || HOST === "::" ? [HOST, "127.0.0.1"] : [HOST, "127.0.0.1"];
-
-  for (const host of listenHosts) {
-    try {
-      await new Promise((resolve, reject) => {
-        const onError = error => {
-          server.off("listening", onListening);
-          reject(error);
-        };
-        const onListening = () => {
-          server.off("error", onError);
-          resolve();
-        };
-
-        server.once("error", onError);
-        server.once("listening", onListening);
-        server.listen(PORT, host);
-      });
-
-      const origin = host === "0.0.0.0" || host === "::" ? "localhost" : host;
-      console.log(`FlowGuard running at http://${origin}:${PORT}`);
-      console.log(`Storage: ${storageMode}${storageMode === "mongodb" ? ` (${MONGODB_DB})` : ""}`);
-      return;
-    } catch (error) {
-      const retryable = ["EACCES", "EPERM"].includes(error.code);
-      if (!retryable || host === "127.0.0.1") {
-        throw error;
-      }
-      console.warn(`Unable to listen on ${host}:${PORT}, retrying on 127.0.0.1: ${error.message}`);
-    }
-  }
+  server.listen(PORT, HOST, () => {
+    console.log(`FlowGuard running at http://localhost:${PORT}`);
+    console.log(`Storage: ${storageMode}${storageMode === "mongodb" ? ` (${MONGODB_DB})` : ""}`);
+  });
 }
 
 process.on("SIGINT", async () => {
