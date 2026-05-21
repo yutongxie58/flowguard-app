@@ -514,8 +514,8 @@ Send email to customer</textarea>
 
 function renderTimeline(workflow) {
   const timeline = state.execution?.workflowId === workflow?.id
-    ? state.execution.timeline
-    : workflow?.plan || [];
+    ? (state.execution?.timeline || [])
+    : (workflow?.plan || []);
 
   if (!timeline.length) return `<div class="empty">Run the agent to generate an execution timeline.</div>`;
 
@@ -543,7 +543,7 @@ function renderCheckpointPanel(workflow, checkpoint) {
   if (!workflow) return `<div class="empty">No workflow selected.</div>`;
   const runInstruction = state.execution?.input?.runInstruction;
 
-  if (state.execution?.status === "failed" && state.execution.artifacts.failure) {
+  if (state.execution?.status === "failed" && state.execution?.artifacts?.failure) {
     const failure = state.execution.artifacts.failure;
     return `
       <div class="artifact failure">

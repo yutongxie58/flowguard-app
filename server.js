@@ -2153,10 +2153,37 @@ const server = http.createServer(async (req, res) => {
 
 async function start() {
   await connectStorage();
-  server.listen(PORT, HOST, () => {
-    console.log(`FlowGuard running at http://localhost:${PORT}`);
-    console.log(`Storage: ${storageMode}${storageMode === "mongodb" ? ` (${MONGODB_DB})` : ""}`);
-  });
+  const listenHosts = HOST === "0.0.0.0" || HOST === "::" ? [HOST, "127.0.0.1"] : [HOST, "127.0.0.1"];
+
+  for (const host of listenHosts) {
+    try {
+      await new Promise((resolve, reject) => {
+        const onError = error => {
+          server.off("listening", onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.off("error", onError);
+          resolve();
+        };
+
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(PORT, host);
+      });
+
+      const origin = host === "0.0.0.0" || host === "::" ? "localhost" : host;
+      console.log(`FlowGuard running at http://${origin}:${PORT}`);
+      console.log(`Storage: ${storageMode}${storageMode === "mongodb" ? ` (${MONGODB_DB})` : ""}`);
+      return;
+    } catch (error) {
+      const retryable = ["EACCES", "EPERM"].includes(error.code);
+      if (!retryable || host === "127.0.0.1") {
+        throw error;
+      }
+      console.warn(`Unable to listen on ${host}:${PORT}, retrying on 127.0.0.1: ${error.message}`);
+    }
+  }
 }
 
 process.on("SIGINT", async () => {
